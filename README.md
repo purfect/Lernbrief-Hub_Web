@@ -50,24 +50,3 @@ sudo mkdir -p tmp/mpdf
 sudo chown -R www-data:www-data lernbrief_hub.db tmp
 sudo chmod -R 775 tmp
 ```
-
-Bei Caddy mit PHP-FPM laeuft PHP meistens ebenfalls als `www-data`. Falls ein anderer User genutzt wird:
-
-```bash
-ps aux | grep php-fpm
-```
-
-PDF-Export-Debug ohne Webserver-Logs:
-
-```bash
-cd /pfad/zu/lerbriefe-hub
-tail -n 80 tmp/export-debug.log
-```
-
-Lokaler Start, wenn PHP im PATH ist:
-
-```powershell
-php8.3 -S 127.0.0.1:8080 -t lernhub_webroot
-```
-
-Danach im Browser `http://127.0.0.1:8080/` oeffnen.
