@@ -846,6 +846,7 @@ function build_letter(int $studentId, string $semester): string
             $sentence .= ' Hinweis: ' . $row['note'];
         }
         $parts[] = '<p>' . h(ensure_sentence_punctuation(implode(' ', array_filter(array_map('trim', preg_split('/\R/', $sentence) ?: []))))) . '</p>';
+        $parts[] = '<p class="sentence-break">&nbsp;</p>';
     }
     if ($footerPosition === 'bottom') {
         foreach ($footerParts as $part) {
@@ -1204,9 +1205,9 @@ function letter_template_preview_html(array $tpl): string
         $footerParts[] = $customFooter;
     }
     $ratings = [
-        '<p>In Fachwissen arbeitet Max sicher mit den Grundlagen und kann Gelerntes zunehmend selbststaendig anwenden.</p>',
-        '<p>In Mitarbeit beteiligt sich Max regelmaessig und bringt passende Beitraege in Unterrichtsgespraeche ein.</p>',
-        '<p>In Selbstorganisation gelingt es Max, Aufgaben sorgfaeltig zu planen und rechtzeitig abzugeben.</p>',
+        '<p>In Fachwissen arbeitet Max sicher mit den Grundlagen und kann Gelerntes zunehmend selbststaendig anwenden.</p><p class="sentence-break">&nbsp;</p>',
+        '<p>In Mitarbeit beteiligt sich Max regelmaessig und bringt passende Beitraege in Unterrichtsgespraeche ein.</p><p class="sentence-break">&nbsp;</p>',
+        '<p>In Selbstorganisation gelingt es Max, Aufgaben sorgfaeltig zu planen und rechtzeitig abzugeben.</p><p class="sentence-break">&nbsp;</p>',
     ];
     $parts = [];
     $headerPosition = in_array($tpl['header_position'] ?? 'top', ['top', 'after_intro'], true) ? $tpl['header_position'] : 'top';
