@@ -263,6 +263,25 @@ th {
     padding: 0.85rem;
 }
 
+.letter-preview {
+    max-width: 820px;
+    margin-left: auto;
+    margin-right: auto;
+}
+
+.letter-preview-content {
+    background: var(--input-bg);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 1.25rem;
+}
+
+.export-meta {
+    margin-top: 1.5rem;
+    padding-top: 1rem;
+    border-top: 1px solid var(--line);
+}
+
 .template-config-form {
     margin-top: 0.9rem;
 }

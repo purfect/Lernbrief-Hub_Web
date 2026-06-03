@@ -38,6 +38,7 @@ CREATE TABLE IF NOT EXISTS students (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     group_id INTEGER NOT NULL,
     full_name TEXT NOT NULL,
+    is_active INTEGER NOT NULL DEFAULT 1,
     FOREIGN KEY (group_id) REFERENCES groups(id) ON DELETE CASCADE
 );
 CREATE TABLE IF NOT EXISTS competencies (
@@ -107,7 +108,18 @@ CREATE TABLE IF NOT EXISTS letter_templates (
     footer_position TEXT NOT NULL DEFAULT 'bottom',
     body_font_family TEXT NOT NULL DEFAULT 'Georgia',
     body_font_size INTEGER NOT NULL DEFAULT 16,
+    include_export_signature INTEGER NOT NULL DEFAULT 1,
+    export_signature_template TEXT NOT NULL DEFAULT 'Datum: {date}<br><br>Unterschrift: ______________________________',
     is_active INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS audit_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    actor TEXT NOT NULL DEFAULT '',
+    action TEXT NOT NULL,
+    entity_type TEXT NOT NULL,
+    entity_id INTEGER,
+    details TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL
 );
 SQL);
 
@@ -130,6 +142,11 @@ SQL);
         $db->exec("ALTER TABLE groups ADD COLUMN archived_name TEXT DEFAULT NULL");
     }
 
+    $studentCols = array_column($db->query('PRAGMA table_info(students)')->fetchAll(), 'name');
+    if (!in_array('is_active', $studentCols, true)) {
+        $db->exec("ALTER TABLE students ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1");
+    }
+
     $templateCols = array_column($db->query('PRAGMA table_info(letter_templates)')->fetchAll(), 'name');
     $templateMigrations = [
         'footer_html' => "ALTER TABLE letter_templates ADD COLUMN footer_html TEXT NOT NULL DEFAULT ''",
@@ -139,6 +156,8 @@ SQL);
         'footer_position' => "ALTER TABLE letter_templates ADD COLUMN footer_position TEXT NOT NULL DEFAULT 'bottom'",
         'body_font_family' => "ALTER TABLE letter_templates ADD COLUMN body_font_family TEXT NOT NULL DEFAULT 'Georgia'",
         'body_font_size' => "ALTER TABLE letter_templates ADD COLUMN body_font_size INTEGER NOT NULL DEFAULT 16",
+        'include_export_signature' => "ALTER TABLE letter_templates ADD COLUMN include_export_signature INTEGER NOT NULL DEFAULT 1",
+        'export_signature_template' => "ALTER TABLE letter_templates ADD COLUMN export_signature_template TEXT NOT NULL DEFAULT 'Datum: {date}<br><br>Unterschrift: ______________________________'",
         'is_active' => "ALTER TABLE letter_templates ADD COLUMN is_active INTEGER NOT NULL DEFAULT 0",
     ];
     foreach ($templateMigrations as $column => $sql) {
@@ -175,8 +194,9 @@ SQL);
         $db->prepare(<<<SQL
 INSERT INTO letter_templates (
     name, header_html, footer_html, include_average_sentence, average_sentence_template,
-    header_position, footer_position, body_font_family, body_font_size, is_active
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+    header_position, footer_position, body_font_family, body_font_size,
+    include_export_signature, export_signature_template, is_active
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
 SQL)->execute([
             'Standard',
             get_setting('letter_header_template'),
@@ -187,6 +207,8 @@ SQL)->execute([
             'bottom',
             'Georgia',
             16,
+            1,
+            'Datum: {date}<br><br>Unterschrift: ______________________________',
         ]);
     }
 
@@ -219,6 +241,40 @@ function current_http_user(): string
 function is_valid_grade(int $grade): bool
 {
     return in_array($grade, GRADE_OPTIONS, true);
+}
+
+function audit_log(string $action, string $entityType, ?int $entityId = null, array|string $details = ''): void
+{
+    try {
+        $payload = is_array($details) ? json_encode($details, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) : (string)$details;
+        db()->prepare('INSERT INTO audit_logs (actor, action, entity_type, entity_id, details, created_at) VALUES (?, ?, ?, ?, ?, ?)')
+            ->execute([current_http_user(), $action, $entityType, $entityId, $payload ?: '', date('Y-m-d\TH:i:s')]);
+    } catch (Throwable $e) {
+        export_debug_log('Audit log failed: ' . $e->getMessage());
+    }
+}
+
+function export_system_checks(): array
+{
+    $tmpDir = __DIR__ . '/../tmp';
+    $mpdfTmp = $tmpDir . '/mpdf';
+    return [
+        ['label' => 'Composer Autoload', 'ok' => is_file(__DIR__ . '/../vendor/autoload.php'), 'detail' => '../vendor/autoload.php'],
+        ['label' => 'mPDF', 'ok' => class_exists('\\Mpdf\\Mpdf'), 'detail' => 'PDF-Export mit sauberem Unicode/Layout'],
+        ['label' => 'PHPWord', 'ok' => class_exists('\\PhpOffice\\PhpWord\\PhpWord'), 'detail' => 'DOCX-Export mit besserem Layout'],
+        ['label' => 'PHP Extension mbstring', 'ok' => extension_loaded('mbstring'), 'detail' => 'fuer mPDF erforderlich'],
+        ['label' => 'PHP Extension zip', 'ok' => class_exists('ZipArchive'), 'detail' => 'fuer DOCX erforderlich'],
+        ['label' => 'tmp beschreibbar', 'ok' => ensure_writable_dir($tmpDir), 'detail' => '../tmp'],
+        ['label' => 'tmp/mpdf beschreibbar', 'ok' => ensure_writable_dir($mpdfTmp), 'detail' => '../tmp/mpdf'],
+    ];
+}
+
+function ensure_writable_dir(string $dir): bool
+{
+    if (!is_dir($dir)) {
+        @mkdir($dir, 0775, true);
+    }
+    return is_dir($dir) && is_writable($dir);
 }
 
 function route(string $path, array $query = []): string
@@ -329,7 +385,7 @@ function query_groups(): array
     return all('
         SELECT g.id, g.name, COUNT(s.id) AS student_count
         FROM groups g
-        LEFT JOIN students s ON s.group_id = g.id
+        LEFT JOIN students s ON s.group_id = g.id AND COALESCE(s.is_active, 1) = 1
         WHERE COALESCE(g.is_active, 1) = 1
         GROUP BY g.id, g.name
         ORDER BY g.name ASC
@@ -374,6 +430,31 @@ function active_letter_template(): array
     return one('SELECT * FROM letter_templates WHERE is_active = 1 ORDER BY id ASC LIMIT 1')
         ?: one('SELECT * FROM letter_templates ORDER BY id ASC LIMIT 1')
         ?: [];
+}
+
+function export_signature_values(array $letter = [], array $tpl = []): array
+{
+    return [
+        'date' => date('d.m.Y'),
+        'iso_date' => date('Y-m-d'),
+        'name' => (string)($letter['full_name'] ?? 'Max Beispiel'),
+        'full_name' => (string)($letter['full_name'] ?? 'Max Beispiel'),
+        'semester' => (string)($letter['semester'] ?? default_semester()),
+        'template_name' => (string)($tpl['name'] ?? $letter['template_name'] ?? 'Standard'),
+    ];
+}
+
+function export_signature_html(array $letter = [], ?array $tpl = null): string
+{
+    $tpl = $tpl ?: (isset($letter['template_name'])
+        ? (one('SELECT * FROM letter_templates WHERE name = ?', [(string)$letter['template_name']]) ?: active_letter_template())
+        : active_letter_template());
+    if (!$tpl || (int)($tpl['include_export_signature'] ?? 1) !== 1) {
+        return '';
+    }
+    $template = (string)($tpl['export_signature_template'] ?? 'Datum: {date}<br><br>Unterschrift: ______________________________');
+    $html = normalize_inline_html(safe_format($template, export_signature_values($letter, $tpl)));
+    return trim($html) === '' ? '' : "<div class='export-meta'>" . ensure_block_html($html) . '</div>';
 }
 
 function ensure_sentence_punctuation(string $text): string
@@ -693,6 +774,7 @@ function build_letter(int $studentId, string $semester): string
             FROM students s JOIN groups g ON g.id = s.group_id
             WHERE s.id = ?
               AND COALESCE(g.is_active, 1) = 1
+              AND COALESCE(s.is_active, 1) = 1
     ', [$studentId]);
     if (!$student) {
         throw new RuntimeException('Schueler nicht gefunden.');
@@ -877,6 +959,7 @@ function page_index(): void
         JOIN students s ON s.id = l.student_id
         JOIN groups g ON g.id = s.group_id
         WHERE COALESCE(g.is_active, 1) = 1
+          AND COALESCE(s.is_active, 1) = 1
         ORDER BY l.created_at DESC
         LIMIT 10
     ');
@@ -884,6 +967,7 @@ function page_index(): void
         SELECT s.id AS student_id, s.full_name, g.id AS group_id, g.name AS group_name
         FROM students s JOIN groups g ON g.id = s.group_id
         WHERE COALESCE(g.is_active, 1) = 1
+          AND COALESCE(s.is_active, 1) = 1
           AND (s.full_name LIKE ? OR g.name LIKE ?)
         ORDER BY s.full_name ASC LIMIT 50
     ', ["%{$q}%", "%{$q}%"]);
@@ -916,18 +1000,18 @@ function page_overview(): void
     $summary = one('
         SELECT
         (SELECT COUNT(*) FROM groups WHERE COALESCE(is_active, 1) = 1) AS group_count,
-        (SELECT COUNT(*) FROM students s JOIN groups g ON g.id = s.group_id WHERE COALESCE(g.is_active, 1) = 1) AS student_count,
+        (SELECT COUNT(*) FROM students s JOIN groups g ON g.id = s.group_id WHERE COALESCE(g.is_active, 1) = 1 AND COALESCE(s.is_active, 1) = 1) AS student_count,
         (SELECT COUNT(*) FROM competencies) AS competency_count,
-        (SELECT COUNT(*) FROM ratings r JOIN students s ON s.id = r.student_id JOIN groups g ON g.id = s.group_id WHERE COALESCE(g.is_active, 1) = 1) AS rating_count,
-        (SELECT COUNT(*) FROM letters l JOIN students s ON s.id = l.student_id JOIN groups g ON g.id = s.group_id WHERE COALESCE(g.is_active, 1) = 1) AS letter_count,
-        (SELECT COUNT(DISTINCT r.student_id) FROM ratings r JOIN students s ON s.id = r.student_id JOIN groups g ON g.id = s.group_id WHERE COALESCE(g.is_active, 1) = 1) AS rated_student_count,
-        (SELECT COUNT(DISTINCT l.student_id) FROM letters l JOIN students s ON s.id = l.student_id JOIN groups g ON g.id = s.group_id WHERE COALESCE(g.is_active, 1) = 1) AS letter_student_count,
-        (SELECT COUNT(DISTINCT r.semester) FROM ratings r JOIN students s ON s.id = r.student_id JOIN groups g ON g.id = s.group_id WHERE COALESCE(g.is_active, 1) = 1) AS rating_semester_count,
-        (SELECT COUNT(DISTINCT l.semester) FROM letters l JOIN students s ON s.id = l.student_id JOIN groups g ON g.id = s.group_id WHERE COALESCE(g.is_active, 1) = 1) AS letter_semester_count,
-        (SELECT COUNT(*) FROM ratings r JOIN students s ON s.id = r.student_id JOIN groups g ON g.id = s.group_id WHERE COALESCE(g.is_active, 1) = 1 AND r.semester = ?) AS current_semester_rating_count,
-        (SELECT COUNT(*) FROM letters l JOIN students s ON s.id = l.student_id JOIN groups g ON g.id = s.group_id WHERE COALESCE(g.is_active, 1) = 1 AND l.semester = ?) AS current_semester_letter_count
+        (SELECT COUNT(*) FROM ratings r JOIN students s ON s.id = r.student_id JOIN groups g ON g.id = s.group_id WHERE COALESCE(g.is_active, 1) = 1 AND COALESCE(s.is_active, 1) = 1) AS rating_count,
+        (SELECT COUNT(*) FROM letters l JOIN students s ON s.id = l.student_id JOIN groups g ON g.id = s.group_id WHERE COALESCE(g.is_active, 1) = 1 AND COALESCE(s.is_active, 1) = 1) AS letter_count,
+        (SELECT COUNT(DISTINCT r.student_id) FROM ratings r JOIN students s ON s.id = r.student_id JOIN groups g ON g.id = s.group_id WHERE COALESCE(g.is_active, 1) = 1 AND COALESCE(s.is_active, 1) = 1) AS rated_student_count,
+        (SELECT COUNT(DISTINCT l.student_id) FROM letters l JOIN students s ON s.id = l.student_id JOIN groups g ON g.id = s.group_id WHERE COALESCE(g.is_active, 1) = 1 AND COALESCE(s.is_active, 1) = 1) AS letter_student_count,
+        (SELECT COUNT(DISTINCT r.semester) FROM ratings r JOIN students s ON s.id = r.student_id JOIN groups g ON g.id = s.group_id WHERE COALESCE(g.is_active, 1) = 1 AND COALESCE(s.is_active, 1) = 1) AS rating_semester_count,
+        (SELECT COUNT(DISTINCT l.semester) FROM letters l JOIN students s ON s.id = l.student_id JOIN groups g ON g.id = s.group_id WHERE COALESCE(g.is_active, 1) = 1 AND COALESCE(s.is_active, 1) = 1) AS letter_semester_count,
+        (SELECT COUNT(*) FROM ratings r JOIN students s ON s.id = r.student_id JOIN groups g ON g.id = s.group_id WHERE COALESCE(g.is_active, 1) = 1 AND COALESCE(s.is_active, 1) = 1 AND r.semester = ?) AS current_semester_rating_count,
+        (SELECT COUNT(*) FROM letters l JOIN students s ON s.id = l.student_id JOIN groups g ON g.id = s.group_id WHERE COALESCE(g.is_active, 1) = 1 AND COALESCE(s.is_active, 1) = 1 AND l.semester = ?) AS current_semester_letter_count
     ', [default_semester(), default_semester()]);
-    $largest = all('SELECT g.id, g.name, COUNT(s.id) AS student_count FROM groups g LEFT JOIN students s ON s.group_id = g.id WHERE COALESCE(g.is_active, 1) = 1 GROUP BY g.id, g.name ORDER BY student_count DESC, g.name ASC LIMIT 5');
+    $largest = all('SELECT g.id, g.name, COUNT(s.id) AS student_count FROM groups g LEFT JOIN students s ON s.group_id = g.id AND COALESCE(s.is_active, 1) = 1 WHERE COALESCE(g.is_active, 1) = 1 GROUP BY g.id, g.name ORDER BY student_count DESC, g.name ASC LIMIT 5');
     $activity = all('
         SELECT semester, SUM(rating_count) AS rating_count, SUM(letter_count) AS letter_count
         FROM (
@@ -936,6 +1020,7 @@ function page_overview(): void
             JOIN students s ON s.id = r.student_id
             JOIN groups g ON g.id = s.group_id
             WHERE COALESCE(g.is_active, 1) = 1
+              AND COALESCE(s.is_active, 1) = 1
             GROUP BY r.semester
 
             UNION ALL
@@ -945,6 +1030,7 @@ function page_overview(): void
             JOIN students s ON s.id = l.student_id
             JOIN groups g ON g.id = s.group_id
             WHERE COALESCE(g.is_active, 1) = 1
+              AND COALESCE(s.is_active, 1) = 1
             GROUP BY l.semester
         ) activity
         GROUP BY semester
@@ -957,6 +1043,7 @@ function page_overview(): void
         JOIN students s ON s.id = l.student_id
         JOIN groups g ON g.id = s.group_id
         WHERE COALESCE(g.is_active, 1) = 1
+          AND COALESCE(s.is_active, 1) = 1
         ORDER BY l.created_at DESC
         LIMIT 5
     ');
@@ -998,16 +1085,18 @@ function page_group_show(): void
     $id = (int)($_GET['id'] ?? 0);
     $group = one('SELECT * FROM groups WHERE id = ? AND COALESCE(is_active, 1) = 1', [$id]);
     if (!$group) { flash('Lerngruppe nicht gefunden.', 'error'); redirect_to('/'); }
-    $students = all('SELECT * FROM students WHERE group_id = ? ORDER BY full_name ASC', [$id]);
+    $students = all('SELECT * FROM students WHERE group_id = ? AND COALESCE(is_active, 1) = 1 ORDER BY full_name ASC', [$id]);
+    $inactiveStudents = all('SELECT * FROM students WHERE group_id = ? AND COALESCE(is_active, 1) = 0 ORDER BY full_name ASC', [$id]);
     $semester = normalize_semester($_GET['semester'] ?? default_semester());
     $options = school_semester_options();
     $intro = one('SELECT intro_text FROM group_semester_intros WHERE group_id = ? AND semester = ?', [$id, $semester]);
-    layout('index', function () use ($group, $students, $semester, $options, $intro) { ?>
+    layout('index', function () use ($group, $students, $inactiveStudents, $semester, $options, $intro) { ?>
 <section class="panel"><h2>Lerngruppe: <?= h($group['name']) ?></h2><form action="<?= route('/students/create', ['group_id' => $group['id']]) ?>" method="post" class="inline-form"><input type="text" name="full_name" placeholder="Schuelername" required><button type="submit">Schueler hinzufuegen</button></form></section>
 <section class="panel"><h3>Halbjahrestext der Lerngruppe</h3><p>Dieser Einfuehrungstext wird im Lernbrief aller Schueler dieser Lerngruppe fuer das ausgewaehlte Halbjahr unterhalb des Headers eingefuegt.</p>
 <form method="get" class="inline-form"><input type="hidden" name="r" value="/groups/show"><input type="hidden" name="id" value="<?= h($group['id']) ?>"><label for="semester">Halbjahr:</label><select id="semester" name="semester"><?php foreach ($options as $o): ?><option value="<?= h($o) ?>" <?= $o === $semester ? 'selected' : '' ?>><?= h($o) ?></option><?php endforeach; ?></select><button type="submit">Laden</button></form>
 <form method="post" action="<?= route('/groups/semester-text', ['id' => $group['id']]) ?>" class="grid-form"><input type="hidden" name="semester" value="<?= h($semester) ?>"><textarea name="semester_intro_text" class="semester-textarea" rows="4" placeholder="Optional"><?= h($intro['intro_text'] ?? '') ?></textarea><button type="submit">Halbjahrestext speichern</button></form></section>
-<section class="panel"><h3>Schuelerliste (<?= count($students) ?>)</h3><?= table_rows(['Name','Bewertung','Schuelerakte'], $students, fn($s) => [h($s['full_name']), '<a class="button-link" href="'.route('/ratings', ['student_id'=>$s['id'], 'semester'=>default_semester()]).'">Oeffnen</a>', '<a class="button-link" href="'.route('/ratings', ['student_id'=>$s['id'], 'semester'=>default_semester()]).'#student-record">Anzeigen</a>'], 'Noch keine Schueler in dieser Gruppe.') ?></section><?php });
+<section class="panel"><h3>Aktive Schueler (<?= count($students) ?>)</h3><?= table_rows(['Name','Bewertung','Schuelerakte','Status'], $students, fn($s) => [h($s['full_name']), '<a class="button-link" href="'.route('/ratings', ['student_id'=>$s['id'], 'semester'=>default_semester()]).'">Oeffnen</a>', '<a class="button-link" href="'.route('/ratings', ['student_id'=>$s['id'], 'semester'=>default_semester()]).'#student-record">Anzeigen</a>', '<form method="post" action="'.route('/students/deactivate', ['group_id'=>$s['group_id']]).'"><input type="hidden" name="student_id" value="'.h($s['id']).'"><button type="submit" onclick="return confirm(\'Diesen Schueler deaktivieren?\')">Deaktivieren</button></form>'], 'Noch keine aktiven Schueler in dieser Gruppe.') ?></section>
+<section class="panel"><h3>Deaktivierte Schueler (<?= count($inactiveStudents) ?>)</h3><?= table_rows(['Name','Status'], $inactiveStudents, fn($s) => [h($s['full_name']), '<form method="post" action="'.route('/students/reactivate', ['group_id'=>$s['group_id']]).'"><input type="hidden" name="student_id" value="'.h($s['id']).'"><button type="submit">Reaktivieren</button></form>'], 'Keine deaktivierten Schueler in dieser Gruppe.') ?></section><?php });
 }
 
 function page_competencies(): void
@@ -1045,10 +1134,11 @@ function page_letter_templates(): void
     layout('letter_templates', function () use ($templates, $selected) { ?>
 <section class="panel"><h2>Lernbriefvorlagen</h2><p>Hier bearbeitest du komplette Lernbriefvorlagen mit Layout und Textstil. Platzhalter werden beim Generieren automatisch ersetzt.</p><form method="post" action="<?= route('/letter-templates/save') ?>" class="inline-form"><input type="hidden" name="action" value="create"><input type="text" name="new_template_name" placeholder="Neue Vorlagenbezeichnung" required><button type="submit">Vorlage anlegen</button></form></section>
 <?php if ($selected): ?><section class="panel"><div class="template-tabs" role="tablist"><?php foreach ($templates as $tpl): ?><a class="template-tab <?= (int)$tpl['id'] === (int)$selected['id'] ? 'active' : '' ?>" href="<?= route('/letter-templates', ['template_id' => $tpl['id']]) ?>"><?= h($tpl['name']) ?><?= (int)$tpl['is_active'] ? ' (aktiv)' : '' ?></a><?php endforeach; ?></div>
-<form method="post" action="<?= route('/letter-templates/save') ?>" class="template-config-form"><input type="hidden" name="template_id" value="<?= h($selected['id']) ?>"><div class="inline-form"><input type="text" name="name" value="<?= h($selected['name']) ?>" required><button type="submit" name="action" value="save">Vorlage speichern</button><button type="submit" name="action" value="activate">Als aktiv setzen</button><button type="submit" name="action" value="delete" onclick="return confirm('Diese Vorlage wirklich loeschen?')">Loeschen</button></div>
+<form method="post" action="<?= route('/letter-templates/save') ?>" class="template-config-form"><input type="hidden" name="template_id" value="<?= h($selected['id']) ?>"><div class="inline-form"><input type="text" name="name" value="<?= h($selected['name']) ?>" required><button type="submit" name="action" value="save">Vorlage speichern</button><button type="submit" name="action" value="activate">Als aktiv setzen</button><button type="submit" name="action" value="delete" onclick="return confirm('Diese Vorlage wirklich loeschen?')">Loeschen</button><a class="button-link" href="<?= route('/letter-templates/preview', ['template_id'=>$selected['id']]) ?>" target="_blank">Vorschau</a></div>
 <div class="template-config-grid"><article class="template-card"><h4>Header</h4><p class="template-help">Position und Inhalt des Kopfbereichs.</p><label>Header-Position</label><select name="header_position"><option value="top" <?= $selected['header_position']==='top'?'selected':'' ?>>Ganz oben</option><option value="after_intro" <?= $selected['header_position']==='after_intro'?'selected':'' ?>>Nach Einleitung</option></select><?= rich_editor('header_html', (string)$selected['header_html'], true) ?><div class="placeholder-chips"><span>{name}</span><span>{full_name}</span><span>{group_name}</span><span>{semester}</span><span>{avg_grade}</span><span>{avg_text}</span></div></article>
 <article class="template-card"><h4>Footer</h4><p class="template-help">Abschlussbereich und optionaler Durchschnittssatz.</p><label>Footer-Position</label><select name="footer_position"><option value="bottom" <?= $selected['footer_position']==='bottom'?'selected':'' ?>>Am Ende</option><option value="after_header" <?= $selected['footer_position']==='after_header'?'selected':'' ?>>Direkt nach Header</option></select><label class="toggle-row"><input type="checkbox" name="include_average_sentence" <?= (int)$selected['include_average_sentence'] ? 'checked' : '' ?>> Satz mit Durchschnitt anzeigen</label><label>Durchschnittssatz</label><textarea name="average_sentence_template" rows="3" required><?= h($selected['average_sentence_template']) ?></textarea><?= rich_editor('footer_html', (string)$selected['footer_html'], false) ?></article></div>
-<section class="panel template-layout-panel"><h4>Einheitlicher Textstil fuer Satzbausteine</h4><div class="inline-form"><label for="body_font_family">Schriftart</label><select id="body_font_family" name="body_font_family"><?php foreach (['Arial','Georgia','Times New Roman','Verdana','Calibri'] as $font): ?><option value="<?= h($font) ?>" <?= $selected['body_font_family']===$font?'selected':'' ?>><?= h($font) ?></option><?php endforeach; ?></select><label for="body_font_size">Schriftgroesse</label><input id="body_font_size" type="number" name="body_font_size" min="4" max="28" value="<?= h($selected['body_font_size']) ?>"></div></section></form></section><script src="static/rich_editor.js"></script><?php endif; ?><?php });
+<section class="panel template-layout-panel"><h4>Einheitlicher Textstil fuer Satzbausteine</h4><div class="inline-form"><label for="body_font_family">Schriftart</label><select id="body_font_family" name="body_font_family"><?php foreach (['Arial','Georgia','Times New Roman','Verdana','Calibri'] as $font): ?><option value="<?= h($font) ?>" <?= $selected['body_font_family']===$font?'selected':'' ?>><?= h($font) ?></option><?php endforeach; ?></select><label for="body_font_size">Schriftgroesse</label><input id="body_font_size" type="number" name="body_font_size" min="4" max="28" value="<?= h($selected['body_font_size']) ?>"></div></section>
+<section class="panel template-layout-panel"><h4>Export-Abschluss</h4><label class="toggle-row"><input type="checkbox" name="include_export_signature" <?= (int)($selected['include_export_signature'] ?? 1) ? 'checked' : '' ?>> Abschluss mit Datum / Unterschrift im PDF- und Word-Export anzeigen</label><label>Format</label><textarea name="export_signature_template" rows="4"><?= h($selected['export_signature_template'] ?? 'Datum: {date}<br><br>Unterschrift: ______________________________') ?></textarea><div class="placeholder-chips"><span>{date}</span><span>{iso_date}</span><span>{name}</span><span>{full_name}</span><span>{semester}</span><span>{template_name}</span></div></section></form></section><script src="static/rich_editor.js"></script><?php endif; ?><?php });
 }
 
 function rich_editor(string $name, string $html, bool $withSize): string
@@ -1091,6 +1181,74 @@ function editor_toolbar(bool $withSize = true): string
         </select><?php endif; ?>
     </div><?php
     return ob_get_clean();
+}
+
+function letter_template_preview_html(array $tpl): string
+{
+    $avg = 2.4;
+    $values = [
+        'name' => 'Max Beispiel',
+        'full_name' => 'Max Beispiel',
+        'group_name' => 'Beispielgruppe 7a',
+        'semester' => default_semester(),
+        'avg_grade' => number_format($avg, 2, '.', ''),
+        'avg_text' => avg_text($avg),
+    ];
+    $header = normalize_inline_html(safe_format((string)$tpl['header_html'], $values));
+    $footerParts = [];
+    if ((int)($tpl['include_average_sentence'] ?? 1) === 1) {
+        $footerParts[] = ensure_sentence_punctuation(safe_format((string)$tpl['average_sentence_template'], $values));
+    }
+    $customFooter = normalize_inline_html(safe_format((string)($tpl['footer_html'] ?? ''), $values));
+    if (trim($customFooter) !== '') {
+        $footerParts[] = $customFooter;
+    }
+    $ratings = [
+        '<p>In Fachwissen arbeitet Max sicher mit den Grundlagen und kann Gelerntes zunehmend selbststaendig anwenden.</p>',
+        '<p>In Mitarbeit beteiligt sich Max regelmaessig und bringt passende Beitraege in Unterrichtsgespraeche ein.</p>',
+        '<p>In Selbstorganisation gelingt es Max, Aufgaben sorgfaeltig zu planen und rechtzeitig abzugeben.</p>',
+    ];
+    $parts = [];
+    $headerPosition = in_array($tpl['header_position'] ?? 'top', ['top', 'after_intro'], true) ? $tpl['header_position'] : 'top';
+    $footerPosition = in_array($tpl['footer_position'] ?? 'bottom', ['bottom', 'after_header'], true) ? $tpl['footer_position'] : 'bottom';
+    if ($headerPosition === 'top') {
+        $parts[] = "<div class='letter-header'>" . ensure_block_html($header) . "</div>";
+    }
+    if ($footerPosition === 'after_header') {
+        foreach ($footerParts as $part) {
+            $parts[] = "<div class='letter-footer'>" . ensure_block_html($part) . "</div>";
+        }
+    }
+    $parts[] = '<p>Dies ist ein Beispieltext fuer den Halbjahreseindruck der Lerngruppe.</p>';
+    if ($headerPosition === 'after_intro') {
+        $parts[] = "<div class='letter-header'>" . ensure_block_html($header) . "</div>";
+    }
+    $parts = array_merge($parts, $ratings);
+    if ($footerPosition === 'bottom') {
+        foreach ($footerParts as $part) {
+            $parts[] = "<div class='letter-footer'>" . ensure_block_html($part) . "</div>";
+        }
+    }
+    $signature = export_signature_html(['full_name' => 'Max Beispiel', 'semester' => default_semester(), 'template_name' => $tpl['name']], $tpl);
+    if ($signature !== '') {
+        $parts[] = $signature;
+    }
+    $font = $tpl['body_font_family'] ?: 'Georgia';
+    $size = max(4, min(28, (int)($tpl['body_font_size'] ?? 16)));
+    return "<div class='letter-preview-content' style='font-family:" . h($font) . ";font-size:{$size}px;line-height:1.55;'>" . implode('', $parts) . '</div>';
+}
+
+function page_letter_template_preview(): void
+{
+    $id = (int)($_GET['template_id'] ?? 0);
+    $tpl = $id > 0 ? one('SELECT * FROM letter_templates WHERE id = ?', [$id]) : active_letter_template();
+    if (!$tpl) {
+        flash('Lernbriefvorlage nicht gefunden.', 'error');
+        redirect_to('/letter-templates');
+    }
+    layout('letter_templates', function () use ($tpl) { ?>
+<section class="panel"><h2>Vorschau: <?= h($tpl['name']) ?></h2><p>Diese Vorschau nutzt Beispieldaten und veraendert keine gespeicherten Lernbriefe.</p><div class="inline-form"><a class="button-link" href="<?= route('/letter-templates', ['template_id'=>$tpl['id']]) ?>">Zurueck zur Vorlage</a></div></section>
+<section class="panel letter-preview"><?= letter_template_preview_html($tpl) ?></section><?php });
 }
 
 function build_student_semester_overview(int $studentId): array
@@ -1197,7 +1355,7 @@ function page_ratings(): void
 {
     $studentId = (int)($_GET['student_id'] ?? 0);
     $semester = normalize_semester($_REQUEST['semester'] ?? default_semester());
-    $student = one('SELECT s.id, s.group_id, s.full_name, g.name AS group_name FROM students s JOIN groups g ON g.id = s.group_id WHERE s.id = ? AND COALESCE(g.is_active, 1) = 1', [$studentId]);
+    $student = one('SELECT s.id, s.group_id, s.full_name, g.name AS group_name FROM students s JOIN groups g ON g.id = s.group_id WHERE s.id = ? AND COALESCE(g.is_active, 1) = 1 AND COALESCE(s.is_active, 1) = 1', [$studentId]);
     if (!$student) { flash('Schueler nicht gefunden.', 'error'); redirect_to('/'); }
     $archived = archived_semesters();
     $options = array_values(array_filter(school_semester_options(), fn($s) => !in_array($s, $archived, true)));
@@ -1234,11 +1392,13 @@ function page_letter_show(): void
 function page_data(): void
 {
     $archived = archived_semesters();
+    $exportChecks = export_system_checks();
+    $auditRows = all('SELECT actor, action, entity_type, entity_id, details, created_at FROM audit_logs ORDER BY id DESC LIMIT 30');
     $rows = all('SELECT sem.semester, COALESCE(r.rating_count,0) AS rating_count, COALESCE(l.letter_count,0) AS letter_count FROM (SELECT semester FROM ratings UNION SELECT semester FROM letters) sem LEFT JOIN (SELECT semester, COUNT(*) AS rating_count FROM ratings GROUP BY semester) r ON r.semester = sem.semester LEFT JOIN (SELECT semester, COUNT(*) AS letter_count FROM letters GROUP BY semester) l ON l.semester = sem.semester ORDER BY sem.semester DESC');
     $activeGroups = all('
         SELECT g.id, g.name, COUNT(s.id) AS student_count
         FROM groups g
-        LEFT JOIN students s ON s.group_id = g.id
+        LEFT JOIN students s ON s.group_id = g.id AND COALESCE(s.is_active, 1) = 1
         WHERE COALESCE(g.is_active, 1) = 1
         GROUP BY g.id, g.name
         ORDER BY g.name ASC
@@ -1246,16 +1406,18 @@ function page_data(): void
     $inactiveGroups = all('
         SELECT g.id, COALESCE(g.archived_name, g.name) AS display_name, g.name AS internal_name, COUNT(s.id) AS student_count
         FROM groups g
-        LEFT JOIN students s ON s.group_id = g.id
+        LEFT JOIN students s ON s.group_id = g.id AND COALESCE(s.is_active, 1) = 1
         WHERE COALESCE(g.is_active, 1) = 0
         GROUP BY g.id, g.name, g.archived_name
         ORDER BY display_name ASC
     ');
-    layout('data', function () use ($rows, $archived, $activeGroups, $inactiveGroups) { ?>
+    layout('data', function () use ($rows, $archived, $exportChecks, $auditRows, $activeGroups, $inactiveGroups) { ?>
 <section class="panel"><h2>Daten & Archiv</h2><p>Abgeschlossene Halbjahre archivieren und Datenbank-Backup sichern oder wiederherstellen.</p></section>
+<section class="panel"><h3>Export-Systemcheck</h3><?= table_rows(['Pruefung','Status','Details'], $exportChecks, fn($c) => [h($c['label']), '<span class="status-pill '.($c['ok']?'status-active':'status-archived').'">'.($c['ok']?'OK':'Fehlt').'</span>', h($c['detail'])], 'Keine Exportpruefungen vorhanden.') ?></section>
 <section class="panel"><h3>Archivmodus fuer Halbjahre</h3><p>Aktuell archiviert: <strong><?= count($archived) ?></strong></p><table><thead><tr><th>Halbjahr</th><th>Bewertungen</th><th>Lernbriefe</th><th>Status</th><th>Aktion</th></tr></thead><tbody><?php foreach ($rows as $row): $is=in_array($row['semester'], $archived, true); ?><tr><td><?= h($row['semester']) ?></td><td><?= h($row['rating_count']) ?></td><td><?= h($row['letter_count']) ?></td><td><span class="status-pill <?= $is?'status-archived':'status-active' ?>"><?= $is?'Archiviert':'Aktiv' ?></span></td><td><form method="post" action="<?= route('/data/archive-toggle') ?>"><input type="hidden" name="semester" value="<?= h($row['semester']) ?>"><input type="hidden" name="action" value="<?= $is?'unarchive':'archive' ?>"><button type="submit"><?= $is?'Reaktivieren':'Archivieren' ?></button></form></td></tr><?php endforeach; ?><?php if (!$rows): ?><tr><td colspan="5">Noch keine Halbjahresdaten vorhanden.</td></tr><?php endif; ?></tbody></table></section>
 <section class="panel"><h3>Lerngruppen deaktivieren</h3><p>Deaktivierte Lerngruppen verschwinden aus Dashboard, Suche und Uebersicht. Ihre Schueler, Bewertungen und Lernbriefe bleiben erhalten. Der urspruengliche Gruppenname kann danach neu verwendet werden.</p><h4>Aktive Lerngruppen</h4><table><thead><tr><th>Lerngruppe</th><th>Schueler</th><th>Aktion</th></tr></thead><tbody><?php foreach ($activeGroups as $group): ?><tr><td><?= h($group['name']) ?></td><td><?= h($group['student_count']) ?></td><td><form method="post" action="<?= route('/groups/deactivate') ?>"><input type="hidden" name="group_id" value="<?= h($group['id']) ?>"><button type="submit" onclick="return confirm('Diese Lerngruppe deaktivieren?')">Deaktivieren</button></form></td></tr><?php endforeach; ?><?php if (!$activeGroups): ?><tr><td colspan="3">Keine aktiven Lerngruppen vorhanden.</td></tr><?php endif; ?></tbody></table><h4>Deaktivierte Lerngruppen</h4><table><thead><tr><th>Frueherer Name</th><th>Interner Name</th><th>Schueler</th><th>Aktion</th></tr></thead><tbody><?php foreach ($inactiveGroups as $group): ?><tr><td><?= h($group['display_name']) ?></td><td><?= h($group['internal_name']) ?></td><td><?= h($group['student_count']) ?></td><td><form method="post" action="<?= route('/groups/reactivate') ?>"><input type="hidden" name="group_id" value="<?= h($group['id']) ?>"><button type="submit">Reaktivieren</button></form></td></tr><?php endforeach; ?><?php if (!$inactiveGroups): ?><tr><td colspan="4">Keine deaktivierten Lerngruppen vorhanden.</td></tr><?php endif; ?></tbody></table></section>
-<section class="panel data-actions-grid"><article class="data-action-card"><h3>Backup erstellen</h3><p>Datei: lernbrief_hub.db (ca. <?= file_exists(DB_PATH) ? (int)(filesize(DB_PATH)/1024) : 0 ?> KB)</p><a class="button-link" href="<?= route('/data/backup') ?>">Backup herunterladen</a></article><article class="data-action-card"><h3>Backup wiederherstellen</h3><p>Wiederherstellung ersetzt die aktuelle Datenbank. Vorher wird automatisch eine Sicherungskopie angelegt.</p><form method="post" action="<?= route('/data/restore') ?>" enctype="multipart/form-data" class="grid-form"><input type="file" name="backup_file" accept=".db,.sqlite,.sqlite3" required><button type="submit">Wiederherstellen</button></form></article></section><?php });
+<section class="panel data-actions-grid"><article class="data-action-card"><h3>Backup erstellen</h3><p>Datei: lernbrief_hub.db (ca. <?= file_exists(DB_PATH) ? (int)(filesize(DB_PATH)/1024) : 0 ?> KB)</p><a class="button-link" href="<?= route('/data/backup') ?>">Backup herunterladen</a></article><article class="data-action-card"><h3>Backup wiederherstellen</h3><p>Wiederherstellung ersetzt die aktuelle Datenbank. Vorher wird automatisch eine Sicherungskopie angelegt.</p><form method="post" action="<?= route('/data/restore') ?>" enctype="multipart/form-data" class="grid-form"><input type="file" name="backup_file" accept=".db,.sqlite,.sqlite3" required><button type="submit">Wiederherstellen</button></form></article></section>
+<section class="panel"><h3>Protokoll</h3><?= table_rows(['Zeit','Benutzer','Aktion','Objekt','Details'], $auditRows, fn($r) => [h($r['created_at']), h($r['actor'] ?: '-'), h($r['action']), h($r['entity_type'] . ($r['entity_id'] !== null ? ' #' . $r['entity_id'] : '')), h($r['details'] ?: '-')], 'Noch keine Protokolleintraege vorhanden.') ?></section><?php });
 }
 
 function handle_actions(string $r): void
@@ -1264,7 +1426,7 @@ function handle_actions(string $r): void
     if ($r === '/groups/create') {
         $name = post('name');
         if ($name === '') flash('Bitte einen Gruppennamen eingeben.', 'error');
-        else try { $db->prepare('INSERT INTO groups (name) VALUES (?)')->execute([$name]); flash('Lerngruppe erstellt.'); } catch (Throwable) { flash('Diese Lerngruppe existiert bereits.', 'error'); }
+        else try { $db->prepare('INSERT INTO groups (name) VALUES (?)')->execute([$name]); audit_log('create', 'group', (int)$db->lastInsertId(), ['name'=>$name]); flash('Lerngruppe erstellt.'); } catch (Throwable) { flash('Diese Lerngruppe existiert bereits.', 'error'); }
         redirect_to('/');
     }
     if ($r === '/groups/deactivate') {
@@ -1278,6 +1440,7 @@ function handle_actions(string $r): void
         $internalName = $archivedName . ' (deaktiviert #' . $groupId . ')';
         $db->prepare('UPDATE groups SET is_active = 0, archived_name = ?, name = ? WHERE id = ?')
             ->execute([$archivedName, $internalName, $groupId]);
+        audit_log('deactivate', 'group', $groupId, ['name'=>$archivedName]);
         flash('Lerngruppe wurde deaktiviert. Der Name kann nun neu verwendet werden.');
         redirect_to('/data');
     }
@@ -1299,6 +1462,7 @@ function handle_actions(string $r): void
         }
         $db->prepare('UPDATE groups SET is_active = 1, name = ?, archived_name = NULL WHERE id = ?')
             ->execute([$targetName, $groupId]);
+        audit_log('reactivate', 'group', $groupId, ['name'=>$targetName]);
         flash('Lerngruppe wurde reaktiviert.');
         redirect_to('/data');
     }
@@ -1306,21 +1470,36 @@ function handle_actions(string $r): void
         $gid = (int)($_GET['group_id'] ?? 0);
         $name = post('full_name');
         if ($name === '') flash('Bitte einen Schuelernamen eingeben.', 'error');
-        else { $db->prepare('INSERT INTO students (group_id, full_name) VALUES (?, ?)')->execute([$gid, $name]); flash('Schueler hinzugefuegt.'); }
+        else { $db->prepare('INSERT INTO students (group_id, full_name) VALUES (?, ?)')->execute([$gid, $name]); audit_log('create', 'student', (int)$db->lastInsertId(), ['group_id'=>$gid,'name'=>$name]); flash('Schueler hinzugefuegt.'); }
         redirect_to('/groups/show', ['id' => $gid]);
+    }
+    if ($r === '/students/deactivate' || $r === '/students/reactivate') {
+        $gid = (int)($_GET['group_id'] ?? 0);
+        $studentId = (int)post('student_id');
+        $active = $r === '/students/reactivate' ? 1 : 0;
+        $student = one('SELECT id, full_name FROM students WHERE id = ? AND group_id = ?', [$studentId, $gid]);
+        if (!$student) {
+            flash('Schueler nicht gefunden.', 'error');
+            redirect_to('/groups/show', ['id'=>$gid]);
+        }
+        $db->prepare('UPDATE students SET is_active = ? WHERE id = ?')->execute([$active, $studentId]);
+        audit_log($active ? 'reactivate' : 'deactivate', 'student', $studentId, ['group_id'=>$gid,'name'=>$student['full_name']]);
+        flash($active ? 'Schueler wurde reaktiviert.' : 'Schueler wurde deaktiviert.');
+        redirect_to('/groups/show', ['id'=>$gid]);
     }
     if ($r === '/groups/semester-text') {
         $gid = (int)($_GET['id'] ?? 0); $sem = normalize_semester(post('semester')); $text = post('semester_intro_text');
         if (in_array($sem, archived_semesters(), true)) { flash('Archivierte Halbjahre sind schreibgeschuetzt.', 'error'); redirect_to('/groups/show', ['id'=>$gid,'semester'=>$sem]); }
         if ($text !== '') $db->prepare('INSERT INTO group_semester_intros (group_id, semester, intro_text) VALUES (?, ?, ?) ON CONFLICT(group_id, semester) DO UPDATE SET intro_text = excluded.intro_text')->execute([$gid,$sem,$text]);
         else $db->prepare('DELETE FROM group_semester_intros WHERE group_id = ? AND semester = ?')->execute([$gid,$sem]);
+        audit_log($text !== '' ? 'save_intro' : 'delete_intro', 'group', $gid, ['semester'=>$sem]);
         flash('Halbjahrestext der Lerngruppe gespeichert.'); redirect_to('/groups/show', ['id'=>$gid,'semester'=>$sem]);
     }
     if ($r === '/competencies/save') {
         $action = post('action', 'create'); $name = post('name'); $desc = post('description'); $sort = (int)post('sort_order', '0');
         try {
-            if ($action === 'update') $db->prepare('UPDATE competencies SET name = ?, description = ?, sort_order = ? WHERE id = ?')->execute([$name,$desc,$sort,(int)post('competency_id')]);
-            else { $db->prepare('INSERT INTO competencies (name, description, sort_order) VALUES (?, ?, ?)')->execute([$name,$desc,$sort]); $cid=(int)$db->lastInsertId(); foreach (GRADE_OPTIONS as $g) $db->prepare('INSERT INTO sentence_templates (competency_id, grade, semester, sentence) VALUES (?, ?, ?, ?)')->execute([$cid,$g,'*',"In {$name} erreicht {name} aktuell die Note {$g}."]); }
+            if ($action === 'update') { $cid = (int)post('competency_id'); $db->prepare('UPDATE competencies SET name = ?, description = ?, sort_order = ? WHERE id = ?')->execute([$name,$desc,$sort,$cid]); audit_log('update', 'competency', $cid, ['name'=>$name]); }
+            else { $db->prepare('INSERT INTO competencies (name, description, sort_order) VALUES (?, ?, ?)')->execute([$name,$desc,$sort]); $cid=(int)$db->lastInsertId(); foreach (GRADE_OPTIONS as $g) $db->prepare('INSERT INTO sentence_templates (competency_id, grade, semester, sentence) VALUES (?, ?, ?, ?)')->execute([$cid,$g,'*',"In {$name} erreicht {name} aktuell die Note {$g}."]); audit_log('create', 'competency', $cid, ['name'=>$name]); }
             flash($action === 'update' ? 'Kompetenz aktualisiert.' : 'Kompetenz erstellt.');
         } catch (Throwable) { flash('Diese Kompetenz existiert bereits oder ist ungueltig.', 'error'); }
         redirect_to('/competencies');
@@ -1334,9 +1513,10 @@ function handle_actions(string $r): void
                 redirect_to('/templates');
             }
             $db->prepare('INSERT INTO sentence_templates (competency_id, grade, semester, sentence) VALUES (?, ?, ?, ?)')->execute([(int)post('competency_id'), $grade, '*', post('sentence')]);
+            audit_log('create', 'sentence_template', (int)$db->lastInsertId(), ['grade'=>$grade]);
         }
-        elseif ($action === 'delete') $db->prepare('DELETE FROM sentence_templates WHERE id = ?')->execute([(int)post('template_id')]);
-        else $db->prepare('UPDATE sentence_templates SET sentence = ? WHERE id = ?')->execute([post('sentence'), (int)post('template_id')]);
+        elseif ($action === 'delete') { $tid = (int)post('template_id'); $db->prepare('DELETE FROM sentence_templates WHERE id = ?')->execute([$tid]); audit_log('delete', 'sentence_template', $tid); }
+        else { $tid = (int)post('template_id'); $db->prepare('UPDATE sentence_templates SET sentence = ? WHERE id = ?')->execute([post('sentence'), $tid]); audit_log('update', 'sentence_template', $tid); }
         flash('Satzbausteine aktualisiert.'); redirect_to('/templates');
     }
     if ($r === '/letter-templates/save') {
@@ -1352,25 +1532,26 @@ function handle_actions(string $r): void
             $tpl = active_letter_template();
             $db->prepare('INSERT INTO letters (student_id, semester, content, created_at, template_name, body_font_family, body_font_size) VALUES (?, ?, ?, ?, ?, ?, ?)')
                 ->execute([$sid, $sem, build_letter($sid, $sem), date('Y-m-d\TH:i:s'), $tpl['name'], $tpl['body_font_family'], (int)$tpl['body_font_size']]);
+            audit_log('generate', 'letter', (int)$db->lastInsertId(), ['student_id'=>$sid,'semester'=>$sem,'template'=>$tpl['name'] ?? '']);
             flash('Lernbrief wurde generiert und gespeichert.');
         } catch (Throwable $e) { flash($e->getMessage(), 'error'); }
         redirect_to('/ratings', ['student_id'=>$sid,'semester'=>$sem]);
     }
     if ($r === '/letters/update') {
         $id = (int)($_GET['id'] ?? 0); $content = post('content_html');
-        if ($content === '') flash('Lernbriefinhalt darf nicht leer sein.', 'error'); else { $db->prepare('UPDATE letters SET content = ? WHERE id = ?')->execute([$content,$id]); flash('Lernbrief wurde gespeichert.'); }
+        if ($content === '') flash('Lernbriefinhalt darf nicht leer sein.', 'error'); else { $db->prepare('UPDATE letters SET content = ? WHERE id = ?')->execute([$content,$id]); audit_log('update', 'letter', $id); flash('Lernbrief wurde gespeichert.'); }
         redirect_to('/letters/show', ['id'=>$id]);
     }
     if ($r === '/letters/delete') {
         $id = (int)($_GET['id'] ?? 0); $letter = one('SELECT student_id, semester FROM letters WHERE id = ?', [$id]);
-        $db->prepare('DELETE FROM letters WHERE id = ?')->execute([$id]); flash('Lernbrief wurde geloescht.');
+        $db->prepare('DELETE FROM letters WHERE id = ?')->execute([$id]); audit_log('delete', 'letter', $id, $letter ?: []); flash('Lernbrief wurde geloescht.');
         if (post('next') === 'ratings' && $letter) redirect_to('/ratings', ['student_id'=>$letter['student_id'], 'semester'=>$letter['semester']]);
         redirect_to('/');
     }
     if ($r === '/data/archive-toggle') {
         $sem = post('semester'); $archived = archived_semesters();
         if (post('action') === 'archive') $archived[] = $sem; else $archived = array_values(array_diff($archived, [$sem]));
-        set_archived_semesters($archived); flash('Archivstatus gespeichert.'); redirect_to('/data');
+        set_archived_semesters($archived); audit_log(post('action') === 'archive' ? 'archive' : 'unarchive', 'semester', null, ['semester'=>$sem]); flash('Archivstatus gespeichert.'); redirect_to('/data');
     }
     if ($r === '/data/restore') {
         restore_backup_action(); return;
@@ -1381,14 +1562,15 @@ function save_letter_template_action(): void
 {
     $db = db(); $action = post('action'); $id = (int)post('template_id');
     if ($action === 'create') {
-        try { $db->prepare('INSERT INTO letter_templates (name, header_html, footer_html, include_average_sentence, average_sentence_template, header_position, footer_position, body_font_family, body_font_size, is_active) VALUES (?, ?, ?, 1, ?, "top", "bottom", "Georgia", 16, 0)')->execute([post('new_template_name'), 'Lernbrief fuer {name}<br>Lerngruppe: {group_name}<br>Halbjahr: {semester}', '', get_setting('letter_average_sentence_template')]); flash('Neue Lernbriefvorlage erstellt.'); } catch (PDOException $e) { flash($e->getCode() === '23000' ? 'Eine Vorlage mit diesem Namen existiert bereits.' : 'Vorlage konnte nicht erstellt werden: ' . $e->getMessage(), 'error'); }
+        try { $db->prepare('INSERT INTO letter_templates (name, header_html, footer_html, include_average_sentence, average_sentence_template, header_position, footer_position, body_font_family, body_font_size, include_export_signature, export_signature_template, is_active) VALUES (?, ?, ?, 1, ?, "top", "bottom", "Georgia", 16, 1, ?, 0)')->execute([post('new_template_name'), 'Lernbrief fuer {name}<br>Lerngruppe: {group_name}<br>Halbjahr: {semester}', '', get_setting('letter_average_sentence_template'), 'Datum: {date}<br><br>Unterschrift: ______________________________']); audit_log('create', 'letter_template', (int)$db->lastInsertId(), ['name'=>post('new_template_name')]); flash('Neue Lernbriefvorlage erstellt.'); } catch (PDOException $e) { flash($e->getCode() === '23000' ? 'Eine Vorlage mit diesem Namen existiert bereits.' : 'Vorlage konnte nicht erstellt werden: ' . $e->getMessage(), 'error'); }
         redirect_to('/letter-templates');
     }
-    if ($action === 'activate') { $db->exec('UPDATE letter_templates SET is_active = 0'); $db->prepare('UPDATE letter_templates SET is_active = 1 WHERE id = ?')->execute([$id]); flash('Vorlage als aktiv gesetzt.'); redirect_to('/letter-templates', ['template_id'=>$id]); }
+    if ($action === 'activate') { $db->exec('UPDATE letter_templates SET is_active = 0'); $db->prepare('UPDATE letter_templates SET is_active = 1 WHERE id = ?')->execute([$id]); audit_log('activate', 'letter_template', $id); flash('Vorlage als aktiv gesetzt.'); redirect_to('/letter-templates', ['template_id'=>$id]); }
     if ($action === 'delete') {
         if ((int)$db->query('SELECT COUNT(*) FROM letter_templates')->fetchColumn() <= 1) { flash('Mindestens eine Lernbriefvorlage muss erhalten bleiben.', 'error'); redirect_to('/letter-templates', ['template_id'=>$id]); }
         $was = one('SELECT is_active FROM letter_templates WHERE id = ?', [$id]); $db->prepare('DELETE FROM letter_templates WHERE id = ?')->execute([$id]);
         if ($was && (int)$was['is_active'] === 1) $db->exec('UPDATE letter_templates SET is_active = 1 WHERE id = (SELECT id FROM letter_templates ORDER BY id ASC LIMIT 1)');
+        audit_log('delete', 'letter_template', $id);
         flash('Vorlage geloescht.'); redirect_to('/letter-templates');
     }
     $name = post('name'); $header = post('header_html') ?: 'Lernbrief fuer {name}<br>Lerngruppe: {group_name}<br>Halbjahr: {semester}';
@@ -1405,9 +1587,11 @@ function save_letter_template_action(): void
         redirect_to('/letter-templates', ['template_id' => $id]);
     }
     $avg = post('average_sentence_template') ?: get_setting('letter_average_sentence_template');
+    $exportSignature = post('export_signature_template') ?: 'Datum: {date}<br><br>Unterschrift: ______________________________';
     try {
-        $db->prepare('UPDATE letter_templates SET name=?, header_html=?, footer_html=?, include_average_sentence=?, average_sentence_template=?, header_position=?, footer_position=?, body_font_family=?, body_font_size=? WHERE id=?')
-            ->execute([$name, $header, post('footer_html'), isset($_POST['include_average_sentence']) ? 1 : 0, $avg, in_array(post('header_position'), ['top','after_intro'], true) ? post('header_position') : 'top', in_array(post('footer_position'), ['bottom','after_header'], true) ? post('footer_position') : 'bottom', post('body_font_family', 'Georgia'), max(4, min(28, (int)post('body_font_size', '16'))), $id]);
+        $db->prepare('UPDATE letter_templates SET name=?, header_html=?, footer_html=?, include_average_sentence=?, average_sentence_template=?, header_position=?, footer_position=?, body_font_family=?, body_font_size=?, include_export_signature=?, export_signature_template=? WHERE id=?')
+            ->execute([$name, $header, post('footer_html'), isset($_POST['include_average_sentence']) ? 1 : 0, $avg, in_array(post('header_position'), ['top','after_intro'], true) ? post('header_position') : 'top', in_array(post('footer_position'), ['bottom','after_header'], true) ? post('footer_position') : 'bottom', post('body_font_family', 'Georgia'), max(4, min(28, (int)post('body_font_size', '16'))), isset($_POST['include_export_signature']) ? 1 : 0, $exportSignature, $id]);
+        audit_log('update', 'letter_template', $id, ['name'=>$name]);
         flash('Lernbriefvorlage gespeichert.');
     } catch (PDOException $e) { flash($e->getCode() === '23000' ? 'Eine Vorlage mit diesem Namen existiert bereits.' : 'Vorlage konnte nicht gespeichert werden: ' . $e->getMessage(), 'error'); }
     redirect_to('/letter-templates', ['template_id'=>$id]);
@@ -1421,6 +1605,7 @@ function save_ratings_action(int $studentId): void
         $text = post('semester_goal_text');
         if ($text !== '') db()->prepare('INSERT INTO student_semester_goals (student_id, semester, goal_text) VALUES (?, ?, ?) ON CONFLICT(student_id, semester) DO UPDATE SET goal_text = excluded.goal_text')->execute([$studentId,$sem,$text]);
         else db()->prepare('DELETE FROM student_semester_goals WHERE student_id = ? AND semester = ?')->execute([$studentId,$sem]);
+        audit_log($text !== '' ? 'save_goal' : 'delete_goal', 'student', $studentId, ['semester'=>$sem]);
         flash('Halbjahresziel gespeichert.'); redirect_to('/ratings', ['student_id'=>$studentId,'semester'=>$sem]);
     }
     foreach (query_competencies() as $comp) {
@@ -1434,6 +1619,7 @@ function save_ratings_action(int $studentId): void
         db()->prepare('INSERT INTO ratings (student_id, competency_id, semester, grade, note) VALUES (?, ?, ?, ?, ?) ON CONFLICT(student_id, competency_id, semester) DO UPDATE SET grade = excluded.grade, note = excluded.note')
             ->execute([$studentId, $comp['id'], $sem, $gradeValue, trim((string)($_POST['note_'.$comp['id']] ?? ''))]);
     }
+    audit_log('save_ratings', 'student', $studentId, ['semester'=>$sem]);
     flash('Bewertungen gespeichert.'); redirect_to('/ratings', ['student_id'=>$studentId,'semester'=>$sem]);
 }
 
@@ -1474,16 +1660,13 @@ function export_pdf(int $id): never
         export_pdf_builtin($letter);
     } catch (Throwable $e) {
         export_debug_log('PDF export failed: ' . $e->getMessage());
-        http_response_code(500);
-        header('Content-Type: text/plain; charset=utf-8');
-        echo "PDF-Export fehlgeschlagen.\n\n" . $e->getMessage() . "\n\nDetails stehen in ../tmp/export-debug.log";
-        exit;
+        export_failure_response('PDF', $e->getMessage());
     }
 }
 
 function export_pdf_builtin(array $letter): never
 {
-    $stream = pdf_stream_from_blocks(html_blocks_from_content((string)$letter['content']));
+    $stream = pdf_stream_from_blocks(html_blocks_from_content((string)$letter['content'] . export_signature_html($letter)));
     $objects = [
         "1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj",
         "2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj",
@@ -1513,27 +1696,41 @@ function export_debug_log(string $message): void
     error_log($message);
 }
 
+function export_failure_response(string $type, string $message): never
+{
+    http_response_code(500);
+    $checks = export_system_checks();
+    header('Content-Type: text/html; charset=utf-8');
+    ?><!doctype html><html lang="de"><head><meta charset="utf-8"><title><?= h($type) ?>-Export fehlgeschlagen</title><link rel="stylesheet" href="static/style.css"></head><body><main class="container"><section class="panel"><h1><?= h($type) ?>-Export fehlgeschlagen</h1><p>Der Export konnte nicht abgeschlossen werden. Die technische Meldung wurde in <code>../tmp/export-debug.log</code> protokolliert.</p><p><strong>Fehler:</strong> <?= h($message) ?></p><p><a class="button-link" href="<?= route('/data') ?>">Systemcheck oeffnen</a> <a class="button-link" href="<?= route('/') ?>">Zum Dashboard</a></p></section><section class="panel"><h2>Export-Systemcheck</h2><?= table_rows(['Pruefung','Status','Details'], $checks, fn($c) => [h($c['label']), '<span class="status-pill '.($c['ok']?'status-active':'status-archived').'">'.($c['ok']?'OK':'Fehlt').'</span>', h($c['detail'])], 'Keine Exportpruefungen vorhanden.') ?></section></main></body></html><?php
+    exit;
+}
+
 function export_docx(int $id): never
 {
-    $letter = one('SELECT l.*, s.full_name FROM letters l JOIN students s ON s.id = l.student_id WHERE l.id = ?', [$id]);
-    if (!$letter) { flash('Lernbrief nicht gefunden.', 'error'); redirect_to('/'); }
-    if (class_exists('\\PhpOffice\\PhpWord\\PhpWord')) {
-        export_docx_phpword($letter);
+    try {
+        $letter = one('SELECT l.*, s.full_name FROM letters l JOIN students s ON s.id = l.student_id WHERE l.id = ?', [$id]);
+        if (!$letter) { flash('Lernbrief nicht gefunden.', 'error'); redirect_to('/'); }
+        if (class_exists('\\PhpOffice\\PhpWord\\PhpWord')) {
+            export_docx_phpword($letter);
+        }
+        if (!class_exists('ZipArchive')) {
+            download_bytes(filename($letter['full_name'], $letter['semester'], 'doc'), 'application/msword', export_document_html((string)$letter['content'], $letter));
+        }
+        $tmp = tempnam(sys_get_temp_dir(), 'docx');
+        $zip = new ZipArchive();
+        $zip->open($tmp, ZipArchive::OVERWRITE);
+        $zip->addFromString('[Content_Types].xml', '<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>');
+        $zip->addFromString('_rels/.rels', '<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>');
+        $paras = docx_paragraphs_from_blocks(html_blocks_from_content((string)$letter['content'] . export_signature_html($letter)));
+        $zip->addFromString('word/document.xml', '<?xml version="1.0" encoding="UTF-8"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>' . $paras . '</w:body></w:document>');
+        $zip->close();
+        $bytes = file_get_contents($tmp) ?: '';
+        unlink($tmp);
+        download_bytes(filename($letter['full_name'], $letter['semester'], 'docx'), 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', $bytes);
+    } catch (Throwable $e) {
+        export_debug_log('DOCX export failed: ' . $e->getMessage());
+        export_failure_response('Word', $e->getMessage());
     }
-    if (!class_exists('ZipArchive')) {
-        download_bytes(filename($letter['full_name'], $letter['semester'], 'doc'), 'application/msword', '<html><body>' . $letter['content'] . '</body></html>');
-    }
-    $tmp = tempnam(sys_get_temp_dir(), 'docx');
-    $zip = new ZipArchive();
-    $zip->open($tmp, ZipArchive::OVERWRITE);
-    $zip->addFromString('[Content_Types].xml', '<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>');
-    $zip->addFromString('_rels/.rels', '<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>');
-    $paras = docx_paragraphs_from_blocks(html_blocks_from_content((string)$letter['content']));
-    $zip->addFromString('word/document.xml', '<?xml version="1.0" encoding="UTF-8"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>' . $paras . '</w:body></w:document>');
-    $zip->close();
-    $bytes = file_get_contents($tmp) ?: '';
-    unlink($tmp);
-    download_bytes(filename($letter['full_name'], $letter['semester'], 'docx'), 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', $bytes);
 }
 
 function export_pdf_mpdf(array $letter): never
@@ -1553,7 +1750,7 @@ function export_pdf_mpdf(array $letter): never
         'default_font' => 'dejavusans',
         'tempDir' => $tempDir,
     ]);
-    $html = export_document_html((string)$letter['content']);
+    $html = export_document_html((string)$letter['content'], $letter);
     $mpdf->WriteHTML($html);
     download_bytes(
         filename($letter['full_name'], $letter['semester'], 'pdf'),
@@ -1574,7 +1771,7 @@ function export_docx_phpword(array $letter): never
         'marginBottom' => 1200,
         'marginLeft' => 1200,
     ]);
-    \PhpOffice\PhpWord\Shared\Html::addHtml($section, normalize_export_html((string)$letter['content']), false, false);
+    \PhpOffice\PhpWord\Shared\Html::addHtml($section, normalize_export_html((string)$letter['content'] . export_signature_html($letter)), false, false);
 
     $tmp = tempnam(sys_get_temp_dir(), 'phpword-docx');
     $writer = \PhpOffice\PhpWord\IOFactory::createWriter($phpWord, 'Word2007');
@@ -1588,17 +1785,21 @@ function export_docx_phpword(array $letter): never
     );
 }
 
-function export_document_html(string $content): string
+function export_document_html(string $content, array $letter = []): string
 {
     $body = normalize_export_html($content);
+    $signature = export_signature_html($letter);
     return '<!doctype html><html><head><meta charset="utf-8"><style>
+        @page { margin: 20mm 18mm 22mm 18mm; }
         body { font-family: DejaVu Sans, Arial, sans-serif; font-size: 11pt; line-height: 1.45; }
         p { margin: 0 0 10pt 0; }
         h1, h2, h3 { margin: 0 0 12pt 0; font-weight: bold; }
         ul, ol { margin: 0 0 10pt 22pt; }
         .letter-header { margin-bottom: 10pt; }
         .letter-footer { margin-top: 10pt; }
-    </style></head><body>' . $body . '</body></html>';
+        .export-meta { margin-top: 22pt; padding-top: 12pt; border-top: 1px solid #777; }
+        .signature-line { margin-top: 26pt; }
+    </style></head><body>' . $body . $signature . '</body></html>';
 }
 
 function normalize_export_html(string $html): string
@@ -1744,6 +1945,7 @@ match ($r) {
     '/competencies' => page_competencies(),
     '/templates' => page_templates(),
     '/letter-templates' => page_letter_templates(),
+    '/letter-templates/preview' => page_letter_template_preview(),
     '/ratings' => page_ratings(),
     '/letters/show' => page_letter_show(),
     '/data' => page_data(),
