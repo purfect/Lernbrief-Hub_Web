@@ -832,6 +832,7 @@ function build_letter(int $studentId, string $semester): string
     }
     if ($intro && trim((string)$intro['intro_text']) !== '') {
         $parts[] = plain_text_to_letter_html((string)$intro['intro_text'], true);
+        $parts[] = '<br>';
     }
     if ($headerPosition === 'after_intro') {
         $parts[] = "<div class='letter-header'>" . ensure_block_html($header) . "</div>";
@@ -1219,6 +1220,7 @@ function letter_template_preview_html(array $tpl): string
         }
     }
     $parts[] = '<p>Dies ist ein Beispieltext fuer den Halbjahreseindruck der Lerngruppe.</p>';
+    $parts[] = '<br>';
     if ($headerPosition === 'after_intro') {
         $parts[] = "<div class='letter-header'>" . ensure_block_html($header) . "</div>";
     }
