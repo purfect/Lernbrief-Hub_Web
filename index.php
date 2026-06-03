@@ -856,7 +856,7 @@ function build_letter(int $studentId, string $semester): string
 
     $font = $tpl['body_font_family'] ?: 'Georgia';
     $size = max(4, min(28, (int)$tpl['body_font_size']));
-    return "<div style='font-family:" . h($font) . ";font-size:{$size}px;line-height:1.55;'>" . implode('', $parts) . '</div>';
+    return "<div style='font-family:" . h($font) . ";font-size:{$size}px;line-height:1.35;'>" . implode('', $parts) . '</div>';
 }
 
 function layout(string $active, callable $content): void
@@ -1234,7 +1234,7 @@ function letter_template_preview_html(array $tpl): string
     }
     $font = $tpl['body_font_family'] ?: 'Georgia';
     $size = max(4, min(28, (int)($tpl['body_font_size'] ?? 16)));
-    return "<div class='letter-preview-content' style='font-family:" . h($font) . ";font-size:{$size}px;line-height:1.55;'>" . implode('', $parts) . '</div>';
+    return "<div class='letter-preview-content' style='font-family:" . h($font) . ";font-size:{$size}px;line-height:1.35;'>" . implode('', $parts) . '</div>';
 }
 
 function page_letter_template_preview(): void
@@ -1753,10 +1753,10 @@ function export_document_html(string $content, array $letter = []): string
     $signature = export_signature_html($letter);
     return '<!doctype html><html><head><meta charset="utf-8"><style>
         @page { margin: 20mm 18mm 22mm 18mm; }
-        body { font-family: DejaVu Sans, Arial, sans-serif; font-size: 11pt; line-height: 1.45; }
-        p { margin: 0 0 10pt 0; }
+        body { font-family: DejaVu Sans, Arial, sans-serif; font-size: 11pt; line-height: 1.35; }
+        p { margin: 0 0 4pt 0; }
         h1, h2, h3 { margin: 0 0 12pt 0; font-weight: bold; }
-        ul, ol { margin: 0 0 10pt 22pt; }
+        ul, ol { margin: 0 0 6pt 22pt; }
         .letter-header { margin-bottom: 10pt; }
         .letter-footer { margin-top: 10pt; }
         .export-meta { margin-top: 22pt; padding-top: 12pt; border-top: 1px solid #777; }
@@ -1779,10 +1779,10 @@ function export_word_compatible_html(string $content, array $letter = []): strin
         . '<meta name="ProgId" content="Word.Document">'
         . '<meta name="Generator" content="Lernbrief-Hub">'
         . '<style>'
-        . 'body, p, li, td { font-family: ' . h($font) . ', serif; font-size: ' . $sizePt . 'pt; line-height: 1.35; }'
+        . 'body, p, li, td { font-family: ' . h($font) . ', serif; font-size: ' . $sizePt . 'pt; line-height: 1.3; }'
         . 'h1, h2, h3 { margin: 0 0 12pt 0; font-weight: bold; }'
-        . 'p { margin: 0 0 10pt 0; }'
-        . 'ul, ol { margin-top: 0; margin-bottom: 10pt; }'
+        . 'p { margin: 0 0 4pt 0; }'
+        . 'ul, ol { margin-top: 0; margin-bottom: 6pt; }'
         . '.letter-header { margin-bottom: 10pt; }'
         . '.letter-footer { margin-top: 10pt; }'
         . '.export-meta { margin-top: 20pt; padding-top: 10pt; border-top: 1px solid #777; }'

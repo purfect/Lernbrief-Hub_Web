@@ -412,7 +412,13 @@ th {
     padding: 0.55rem;
     background: var(--input-bg);
     color: var(--text);
+    line-height: 1.35;
     outline: none;
+}
+
+.rich-content p,
+.rich-content div {
+    margin: 0;
 }
 
 .rich-content:focus {
@@ -428,7 +434,7 @@ th {
 .letter-edit-content {
     min-height: 380px;
     width: min(100%, 980px);
-    line-height: 1.5;
+    line-height: 1.35;
 }
 
 .rating-note {
@@ -441,6 +447,7 @@ th {
 .semester-textarea {
     width: min(100%, 920px);
     min-height: 90px;
+    line-height: 1.35;
     resize: vertical;
 }
 
