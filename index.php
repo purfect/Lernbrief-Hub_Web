@@ -844,9 +844,6 @@ function build_letter(int $studentId, string $semester): string
         $candidates = all('SELECT sentence FROM sentence_templates WHERE competency_id = ? AND grade = ? ORDER BY id ASC', [$row['competency_id'], $row['grade']]);
         $sentence = $candidates ? $candidates[array_rand($candidates)]['sentence'] : "In {$row['competency_name']} liegt die Leistung bei der Note {$row['grade']}.";
         $sentence = str_replace('{name}', (string)$student['full_name'], (string)$sentence);
-        if (trim((string)$row['note']) !== '') {
-            $sentence .= ' Hinweis: ' . $row['note'];
-        }
         $parts[] = '<p>' . h(ensure_sentence_punctuation(implode(' ', array_filter(array_map('trim', preg_split('/\R/', $sentence) ?: []))))) . '</p>';
         $parts[] = '<div class="sentence-break"><br></div>';
     }
