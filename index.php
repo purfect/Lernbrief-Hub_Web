@@ -261,9 +261,8 @@ function export_system_checks(): array
     return [
         ['label' => 'Composer Autoload', 'ok' => is_file(__DIR__ . '/../vendor/autoload.php'), 'detail' => '../vendor/autoload.php'],
         ['label' => 'mPDF', 'ok' => class_exists('\\Mpdf\\Mpdf'), 'detail' => 'PDF-Export mit sauberem Unicode/Layout'],
-        ['label' => 'PHPWord', 'ok' => class_exists('\\PhpOffice\\PhpWord\\PhpWord'), 'detail' => 'DOCX-Export mit besserem Layout'],
         ['label' => 'PHP Extension mbstring', 'ok' => extension_loaded('mbstring'), 'detail' => 'fuer mPDF erforderlich'],
-        ['label' => 'PHP Extension zip', 'ok' => class_exists('ZipArchive'), 'detail' => 'fuer DOCX erforderlich'],
+        ['label' => 'Word (.doc) HTML-Export', 'ok' => true, 'detail' => 'Word95/LibreOffice kompatibel (Standard)'],
         ['label' => 'tmp beschreibbar', 'ok' => ensure_writable_dir($tmpDir), 'detail' => '../tmp'],
         ['label' => 'tmp/mpdf beschreibbar', 'ok' => ensure_writable_dir($mpdfTmp), 'detail' => '../tmp/mpdf'],
     ];
@@ -989,8 +988,8 @@ function page_index(): void
     <?php foreach ($groups as $group): ?><tr><td><?= h($group['name']) ?></td><td><?= h($group['student_count']) ?></td><td><a class="button-link" href="<?= route('/groups/show', ['id' => $group['id']]) ?>">Oeffnen</a></td></tr><?php endforeach; ?>
     <?php if (!$groups): ?><tr><td colspan="3">Noch keine Lerngruppe vorhanden.</td></tr><?php endif; ?>
 </tbody></table></section>
-<section class="panel"><h2>Zuletzt erzeugte Lernbriefe</h2><table><thead><tr><th>Schueler</th><th>Halbjahr</th><th>Erstellt am</th><th>Aktion</th><th>PDF</th><th>Word</th></tr></thead><tbody>
-    <?php foreach ($recent as $letter): ?><tr><td><?= h($letter['full_name']) ?></td><td><?= h($letter['semester']) ?></td><td><?= h($letter['created_at']) ?></td><td><a class="button-link" href="<?= route('/letters/show', ['id' => $letter['id']]) ?>">Anzeigen</a></td><td><a class="button-link" href="<?= route('/letters/pdf', ['id' => $letter['id']]) ?>">Export</a></td><td><a class="button-link" href="<?= route('/letters/docx', ['id' => $letter['id']]) ?>">Export</a></td></tr><?php endforeach; ?>
+<section class="panel"><h2>Zuletzt erzeugte Lernbriefe</h2><table><thead><tr><th>Schueler</th><th>Halbjahr</th><th>Erstellt am</th><th>Aktion</th><th>PDF</th><th>Word (.doc)</th></tr></thead><tbody>
+    <?php foreach ($recent as $letter): ?><tr><td><?= h($letter['full_name']) ?></td><td><?= h($letter['semester']) ?></td><td><?= h($letter['created_at']) ?></td><td><a class="button-link" href="<?= route('/letters/show', ['id' => $letter['id']]) ?>">Anzeigen</a></td><td><a class="button-link" href="<?= route('/letters/pdf', ['id' => $letter['id']]) ?>">Export</a></td><td><a class="button-link" href="<?= route('/letters/word', ['id' => $letter['id']]) ?>">Export</a></td></tr><?php endforeach; ?>
     <?php if (!$recent): ?><tr><td colspan="6">Noch keine Lernbriefe erzeugt.</td></tr><?php endif; ?>
 </tbody></table></section><?php });
 }
@@ -1374,7 +1373,7 @@ function page_ratings(): void
 <section class="panel"><h2>Bewertung: <?= h($student['full_name']) ?></h2><p>Lerngruppe: <?= h($student['group_name']) ?></p><form method="get" class="inline-form"><input type="hidden" name="r" value="/ratings"><input type="hidden" name="student_id" value="<?= h($student['id']) ?>"><label for="semester">Halbjahr:</label><select id="semester" name="semester"><?php foreach ($options as $o): ?><option value="<?= h($o) ?>" <?= $o===$semester?'selected':'' ?>><?= h($o) ?></option><?php endforeach; ?></select><button type="submit">Laden</button></form>
 <form method="post" action="<?= route('/ratings/save', ['student_id'=>$student['id']]) ?>"><input type="hidden" name="action" value="save_ratings"><input type="hidden" name="semester" value="<?= h($semester) ?>"><table><thead><tr><th>Kompetenz</th><th>Note</th><th>Zusatz / Beobachtung</th></tr></thead><tbody><?php foreach ($competencies as $comp): $r=$ratingsMap[(int)$comp['id']] ?? null; ?><tr><td><?= h($comp['name']) ?></td><td><select name="grade_<?= h($comp['id']) ?>" required><option value="">-</option><?php foreach (GRADE_OPTIONS as $grade): ?><option value="<?= $grade ?>" <?= $r && (int)$r['grade']===$grade?'selected':'' ?>><?= $grade ?></option><?php endforeach; ?></select></td><td><textarea name="note_<?= h($comp['id']) ?>" class="rating-note" rows="2" placeholder="Optional"><?= h($r['note'] ?? '') ?></textarea></td></tr><?php endforeach; ?></tbody></table><button type="submit">Bewertungen speichern</button></form></section>
 <section class="panel"><h3>Halbjahresziele (Schueler)</h3><form method="post" action="<?= route('/ratings/save', ['student_id'=>$student['id']]) ?>" class="grid-form"><input type="hidden" name="action" value="save_student_goal"><input type="hidden" name="semester" value="<?= h($semester) ?>"><label for="semester_goal_text">Halbjahresziele fuer <?= h($student['full_name']) ?></label><textarea id="semester_goal_text" name="semester_goal_text" class="semester-textarea" rows="4" placeholder="Optional"><?= h($goal['goal_text'] ?? '') ?></textarea><button type="submit">Halbjahresziel speichern</button></form></section>
-<section class="panel"><h3>Lernbrief erzeugen</h3><form method="post" action="<?= route('/letters/generate', ['student_id'=>$student['id']]) ?>" class="inline-form"><input type="hidden" name="semester" value="<?= h($semester) ?>"><button type="submit">Lernbrief fuer dieses Halbjahr generieren</button></form><h4>Bereits gespeicherte Lernbriefe</h4><?= table_rows(['Halbjahr','Erstellt am','Anzeigen','PDF','Word','Loeschen'], $letters, fn($l) => [h($l['semester']), h($l['created_at']), '<a class="button-link" href="'.route('/letters/show', ['id'=>$l['id']]).'">Anzeigen</a>', '<a class="button-link" href="'.route('/letters/pdf', ['id'=>$l['id']]).'">Export</a>', '<a class="button-link" href="'.route('/letters/docx', ['id'=>$l['id']]).'">Export</a>', '<form method="post" action="'.route('/letters/delete', ['id'=>$l['id']]).'"><input type="hidden" name="next" value="ratings"><button type="submit">Loeschen</button></form>'], 'Noch keine Lernbriefe vorhanden.') ?></section>
+<section class="panel"><h3>Lernbrief erzeugen</h3><form method="post" action="<?= route('/letters/generate', ['student_id'=>$student['id']]) ?>" class="inline-form"><input type="hidden" name="semester" value="<?= h($semester) ?>"><button type="submit">Lernbrief fuer dieses Halbjahr generieren</button></form><h4>Bereits gespeicherte Lernbriefe</h4><?= table_rows(['Halbjahr','Erstellt am','Anzeigen','PDF','Word (.doc)','Loeschen'], $letters, fn($l) => [h($l['semester']), h($l['created_at']), '<a class="button-link" href="'.route('/letters/show', ['id'=>$l['id']]).'">Anzeigen</a>', '<a class="button-link" href="'.route('/letters/pdf', ['id'=>$l['id']]).'">Export</a>', '<a class="button-link" href="'.route('/letters/word', ['id'=>$l['id']]).'">Export</a>', '<form method="post" action="'.route('/letters/delete', ['id'=>$l['id']]).'"><input type="hidden" name="next" value="ratings"><button type="submit">Loeschen</button></form>'], 'Noch keine Lernbriefe vorhanden.') ?></section>
 <section class="panel" id="student-record"><h3>Bisherige Bewertungen (alle Halbjahre)</h3><?= table_rows(['Halbjahr','Kompetenz','Note','Zusatz'], $history, fn($r) => [h($r['semester']), h($r['competency_name']), h($r['grade']), h($r['note'] ?: '-')], 'Noch keine bisherigen Bewertungen vorhanden.') ?></section>
 <section class="panel"><h3>Kompetenzentwicklung ueber Halbjahre</h3><?php if ($trendData['semesters']): ?><table><thead><tr><th>Kompetenz</th><th>Verlauf</th><th>Letzte Note</th><th>Trend</th></tr></thead><tbody><?php foreach ($trendData['trends'] as $row): ?><tr><td><?= h($row['name']) ?></td><td><div class="trend-track"><?php foreach ($row['points'] as $point): ?><div class="trend-point"><span class="trend-semester"><?= h($point['semester']) ?></span><div class="trend-bar-bg"><div class="trend-bar <?= h($point['grade_class']) ?>" style="height: <?= h($point['score_percent']) ?>%;"></div></div><span class="trend-grade"><?= $point['grade'] !== null ? h($point['grade']) : '-' ?></span></div><?php endforeach; ?></div></td><td><?= $row['latest_grade'] !== null ? h($row['latest_grade']) : '-' ?></td><td><span class="trend-pill <?= h($row['trend_class']) ?>"><?= h($row['delta_text']) ?></span></td></tr><?php endforeach; ?></tbody></table><?php else: ?><p>Fuer diese Schuelerakte sind noch keine Halbjahresverlaeufe vorhanden.</p><?php endif; ?></section>
 <section class="panel"><h3>Halbjahresuebersicht</h3><?= table_rows(['Halbjahr','Durchschnitt','Anzahl Bewertungen','Anzahl Lernbriefe','Letzter Lernbrief'], $overview, fn($r) => [h($r['semester']), h($r['avg_grade']), h($r['rating_count']), h($r['letter_count']), h($r['last_letter_created_at'])], 'Noch keine Halbjahresdaten vorhanden.') ?></section><?php });
@@ -1386,7 +1385,7 @@ function page_letter_show(): void
     $letter = one('SELECT l.*, s.full_name FROM letters l JOIN students s ON s.id = l.student_id WHERE l.id = ?', [$id]);
     if (!$letter) { flash('Lernbrief nicht gefunden.', 'error'); redirect_to('/'); }
     layout('index', function () use ($letter) { ?>
-<section class="panel"><h2>Lernbrief: <?= h($letter['full_name']) ?></h2><p>Halbjahr: <?= h($letter['semester']) ?> | Erstellt am: <?= h($letter['created_at']) ?></p><p>Vorlage: <?= h($letter['template_name'] ?: 'Standard') ?></p><div class="inline-form"><a class="button-link" href="<?= route('/letters/pdf', ['id'=>$letter['id']]) ?>">Als PDF exportieren</a><a class="button-link" href="<?= route('/letters/docx', ['id'=>$letter['id']]) ?>">Als Word exportieren</a></div><form method="post" action="<?= route('/letters/update', ['id'=>$letter['id']]) ?>" class="grid-form" data-letter-editor><label>Lernbriefinhalt bearbeiten</label><?= editor_toolbar(true) ?><div class="rich-content letter-edit-content" contenteditable="true"><?= str_replace("\n", '<br>', (string)$letter['content']) ?></div><input type="hidden" name="content_html"><button type="submit">Aenderungen speichern</button></form><form method="post" action="<?= route('/letters/delete', ['id'=>$letter['id']]) ?>" class="inline-form"><input type="hidden" name="next" value="ratings"><button type="submit">Lernbrief loeschen</button></form></section><script src="static/rich_editor.js"></script><?php });
+<section class="panel"><h2>Lernbrief: <?= h($letter['full_name']) ?></h2><p>Halbjahr: <?= h($letter['semester']) ?> | Erstellt am: <?= h($letter['created_at']) ?></p><p>Vorlage: <?= h($letter['template_name'] ?: 'Standard') ?></p><div class="inline-form"><a class="button-link" href="<?= route('/letters/pdf', ['id'=>$letter['id']]) ?>">Als PDF exportieren</a><a class="button-link" href="<?= route('/letters/word', ['id'=>$letter['id']]) ?>">Als Word (.doc) exportieren</a></div><form method="post" action="<?= route('/letters/update', ['id'=>$letter['id']]) ?>" class="grid-form" data-letter-editor><label>Lernbriefinhalt bearbeiten</label><?= editor_toolbar(true) ?><div class="rich-content letter-edit-content" contenteditable="true"><?= str_replace("\n", '<br>', (string)$letter['content']) ?></div><input type="hidden" name="content_html"><button type="submit">Aenderungen speichern</button></form><form method="post" action="<?= route('/letters/delete', ['id'=>$letter['id']]) ?>" class="inline-form"><input type="hidden" name="next" value="ratings"><button type="submit">Lernbrief loeschen</button></form></section><script src="static/rich_editor.js"></script><?php });
 }
 
 function page_data(): void
@@ -1705,30 +1704,19 @@ function export_failure_response(string $type, string $message): never
     exit;
 }
 
-function export_docx(int $id): never
+function export_word(int $id): never
 {
     try {
         $letter = one('SELECT l.*, s.full_name FROM letters l JOIN students s ON s.id = l.student_id WHERE l.id = ?', [$id]);
         if (!$letter) { flash('Lernbrief nicht gefunden.', 'error'); redirect_to('/'); }
-        if (class_exists('\\PhpOffice\\PhpWord\\PhpWord')) {
-            export_docx_phpword($letter);
-        }
-        if (!class_exists('ZipArchive')) {
-            download_bytes(filename($letter['full_name'], $letter['semester'], 'doc'), 'application/msword', export_document_html((string)$letter['content'], $letter));
-        }
-        $tmp = tempnam(sys_get_temp_dir(), 'docx');
-        $zip = new ZipArchive();
-        $zip->open($tmp, ZipArchive::OVERWRITE);
-        $zip->addFromString('[Content_Types].xml', '<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>');
-        $zip->addFromString('_rels/.rels', '<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>');
-        $paras = docx_paragraphs_from_blocks(html_blocks_from_content((string)$letter['content'] . export_signature_html($letter)));
-        $zip->addFromString('word/document.xml', '<?xml version="1.0" encoding="UTF-8"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>' . $paras . '</w:body></w:document>');
-        $zip->close();
-        $bytes = file_get_contents($tmp) ?: '';
-        unlink($tmp);
-        download_bytes(filename($letter['full_name'], $letter['semester'], 'docx'), 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', $bytes);
+        // Legacy Word HTML is more robust in older Word versions and LibreOffice.
+        download_bytes(
+            filename($letter['full_name'], $letter['semester'], 'doc'),
+            'application/msword',
+            export_word_compatible_html((string)$letter['content'], $letter)
+        );
     } catch (Throwable $e) {
-        export_debug_log('DOCX export failed: ' . $e->getMessage());
+        export_debug_log('Word (.doc) export failed: ' . $e->getMessage());
         export_failure_response('Word', $e->getMessage());
     }
 }
@@ -1759,32 +1747,6 @@ function export_pdf_mpdf(array $letter): never
     );
 }
 
-function export_docx_phpword(array $letter): never
-{
-    $phpWord = new \PhpOffice\PhpWord\PhpWord();
-    $phpWord->setDefaultFontName((string)($letter['body_font_family'] ?: 'Calibri'));
-    $phpWord->setDefaultFontSize(max(8, min(18, (int)($letter['body_font_size'] ?: 12))));
-
-    $section = $phpWord->addSection([
-        'marginTop' => 1200,
-        'marginRight' => 1200,
-        'marginBottom' => 1200,
-        'marginLeft' => 1200,
-    ]);
-    \PhpOffice\PhpWord\Shared\Html::addHtml($section, normalize_export_html((string)$letter['content'] . export_signature_html($letter)), false, false);
-
-    $tmp = tempnam(sys_get_temp_dir(), 'phpword-docx');
-    $writer = \PhpOffice\PhpWord\IOFactory::createWriter($phpWord, 'Word2007');
-    $writer->save($tmp);
-    $bytes = file_get_contents($tmp) ?: '';
-    unlink($tmp);
-    download_bytes(
-        filename($letter['full_name'], $letter['semester'], 'docx'),
-        'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-        $bytes
-    );
-}
-
 function export_document_html(string $content, array $letter = []): string
 {
     $body = normalize_export_html($content);
@@ -1802,45 +1764,39 @@ function export_document_html(string $content, array $letter = []): string
     </style></head><body>' . $body . $signature . '</body></html>';
 }
 
+function export_word_compatible_html(string $content, array $letter = []): string
+{
+    $body = normalize_export_html($content);
+    $signature = export_signature_html($letter);
+    $font = trim((string)($letter['body_font_family'] ?? ''));
+    $font = preg_replace('/[^a-zA-Z0-9,\s"\-]/', '', $font) ?? $font;
+    $font = $font !== '' ? $font : 'Times New Roman';
+    $sizePt = max(9, min(16, (int)($letter['body_font_size'] ?? 12)));
+
+    return '<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word">'
+        . '<head>'
+        . '<meta http-equiv="Content-Type" content="text/html; charset=utf-8">'
+        . '<meta name="ProgId" content="Word.Document">'
+        . '<meta name="Generator" content="Lernbrief-Hub">'
+        . '<style>'
+        . 'body, p, li, td { font-family: ' . h($font) . ', serif; font-size: ' . $sizePt . 'pt; line-height: 1.35; }'
+        . 'h1, h2, h3 { margin: 0 0 12pt 0; font-weight: bold; }'
+        . 'p { margin: 0 0 10pt 0; }'
+        . 'ul, ol { margin-top: 0; margin-bottom: 10pt; }'
+        . '.letter-header { margin-bottom: 10pt; }'
+        . '.letter-footer { margin-top: 10pt; }'
+        . '.export-meta { margin-top: 20pt; padding-top: 10pt; border-top: 1px solid #777; }'
+        . '</style>'
+        . '</head>'
+        . '<body>' . $body . $signature . '</body></html>';
+}
+
 function normalize_export_html(string $html): string
 {
     $html = preg_replace('/<br\s*\/?>/i', '</p><p>', $html) ?? $html;
     $html = preg_replace('/<p>\s*<\/p>/i', '', $html) ?? $html;
     $html = preg_replace('/<\/p>\s*<p>/i', '</p><p>', $html) ?? $html;
     return $html;
-}
-
-function xml_text(string $value): string
-{
-    return htmlspecialchars($value, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
-}
-
-function docx_paragraphs_from_blocks(array $blocks): string
-{
-    $xml = '';
-    foreach ($blocks as $block) {
-        $align = in_array($block['align'] ?? 'left', ['center', 'right', 'both'], true) ? $block['align'] : (($block['align'] ?? '') === 'justify' ? 'both' : 'left');
-        $xml .= '<w:p><w:pPr><w:jc w:val="' . xml_text($align) . '"/></w:pPr>';
-        foreach ($block['runs'] as $run) {
-            foreach (explode("\n", (string)$run['text']) as $idx => $part) {
-                if ($idx > 0) {
-                    $xml .= '<w:r><w:br/></w:r>';
-                }
-                if ($part === '') {
-                    continue;
-                }
-                $rPr = '';
-                if (!empty($run['bold'])) $rPr .= '<w:b/>';
-                if (!empty($run['italic'])) $rPr .= '<w:i/>';
-                if (!empty($run['underline'])) $rPr .= '<w:u w:val="single"/>';
-                if (!empty($run['font'])) $rPr .= '<w:rFonts w:ascii="' . xml_text((string)$run['font']) . '" w:hAnsi="' . xml_text((string)$run['font']) . '"/>';
-                if (!empty($run['size'])) $rPr .= '<w:sz w:val="' . (int)$run['size'] . '"/>';
-                $xml .= '<w:r>' . ($rPr !== '' ? '<w:rPr>' . $rPr . '</w:rPr>' : '') . '<w:t xml:space="preserve">' . xml_text($part) . '</w:t></w:r>';
-            }
-        }
-        $xml .= '</w:p>';
-    }
-    return $xml;
 }
 
 function pdf_stream_from_blocks(array $blocks): string
@@ -1935,7 +1891,8 @@ if ($r === '/data/backup') {
     exit;
 }
 if ($r === '/letters/pdf') export_pdf((int)($_GET['id'] ?? 0));
-if ($r === '/letters/docx') export_docx((int)($_GET['id'] ?? 0));
+if ($r === '/letters/word') export_word((int)($_GET['id'] ?? 0));
+if ($r === '/letters/docx') export_word((int)($_GET['id'] ?? 0)); // Legacy route alias
 
 match ($r) {
     '/' => page_index(),
