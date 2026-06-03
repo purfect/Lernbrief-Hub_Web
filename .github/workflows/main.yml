@@ -1,12 +1,9 @@
 name: Build Debian Package
 
 on:
-  workflow_dispatch:
-  push:
-    branches:
-      - "**"
-    tags:
-      - "*"
+  release:
+    types:
+      - published
 
 permissions:
   contents: write
@@ -31,18 +28,10 @@ jobs:
         run: |
           set -euo pipefail
 
-          if [[ "${GITHUB_REF:-}" == refs/tags/* ]]; then
-            VERSION="${GITHUB_REF_NAME}"
-          else
-            # Debian version must start with a digit.
-            SAFE_REF="${GITHUB_REF_NAME:-local}"
-            SAFE_REF="$(printf '%s' "$SAFE_REF" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9.+~-]+/-/g; s/^-+//; s/-+$//')"
-            [ -n "$SAFE_REF" ] || SAFE_REF="local"
-            VERSION="0.0.0~${SAFE_REF}.${GITHUB_RUN_NUMBER}"
-          fi
-
-          if ! printf '%s' "$VERSION" | grep -Eq '^[0-9]'; then
-            VERSION="0.0.0~${VERSION}"
+          VERSION="${{ github.event.release.tag_name }}"
+          if ! printf '%s' "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "Release-Tag muss exakt im Format X.Y.Z sein (z. B. 1.1.0), erhalten: $VERSION" >&2
+            exit 1
           fi
 
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
@@ -104,15 +93,12 @@ jobs:
           path: dist/*.deb
 
       - name: Install ORAS
-        if: startsWith(github.ref, 'refs/tags/')
         uses: oras-project/setup-oras@v1
 
       - name: Login to GHCR
-        if: startsWith(github.ref, 'refs/tags/')
         run: echo "${{ secrets.GITHUB_TOKEN }}" | oras login ghcr.io -u "${{ github.actor }}" --password-stdin
 
       - name: Publish .deb to GitHub Packages (GHCR)
-        if: startsWith(github.ref, 'refs/tags/')
         shell: bash
         run: |
           set -euo pipefail
@@ -125,7 +111,6 @@ jobs:
             "${DEB_FILE}:application/vnd.debian.binary-package"
 
       - name: Attach to GitHub Release (only tags)
-        if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
           files: dist/*.deb
