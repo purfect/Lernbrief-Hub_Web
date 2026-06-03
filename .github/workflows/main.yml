@@ -3,8 +3,10 @@ name: Build Debian Package
 on:
   workflow_dispatch:
   push:
+    branches:
+      - "**"
     tags:
-      - "v*"
+      - "*"
 
 permissions:
   contents: write
@@ -22,17 +24,35 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y dpkg-dev fakeroot rsync
 
+      - name: Resolve package version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ "${GITHUB_REF:-}" == refs/tags/* ]]; then
+            VERSION="${GITHUB_REF_NAME}"
+          else
+            # Debian version must start with a digit.
+            SAFE_REF="${GITHUB_REF_NAME:-local}"
+            SAFE_REF="$(printf '%s' "$SAFE_REF" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9.+~-]+/-/g; s/^-+//; s/-+$//')"
+            [ -n "$SAFE_REF" ] || SAFE_REF="local"
+            VERSION="0.0.0~${SAFE_REF}.${GITHUB_RUN_NUMBER}"
+          fi
+
+          if ! printf '%s' "$VERSION" | grep -Eq '^[0-9]'; then
+            VERSION="0.0.0~${VERSION}"
+          fi
+
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Resolved package version: $VERSION"
+
       - name: Build .deb
         shell: bash
         run: |
           set -euo pipefail
 
-          VERSION="${GITHUB_REF_NAME:-manual}"
-          VERSION="${VERSION#v}"
-          if [ "$VERSION" = "manual" ]; then
-            VERSION="1.0.0-manual.${GITHUB_RUN_NUMBER}"
-          fi
-
+          VERSION="${{ steps.version.outputs.version }}"
           PKG_NAME="lernbrief-hub"
           ARCH="amd64"
           ROOT="pkg/${PKG_NAME}_${VERSION}_${ARCH}"
