@@ -12,6 +12,14 @@ permissions:
 jobs:
   build-deb:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            artifact_name: deb-package-amd64
+          - arch: arm64
+            artifact_name: deb-package-arm64
 
     steps:
       - name: Checkout
@@ -44,7 +52,7 @@ jobs:
 
           VERSION="${{ steps.version.outputs.version }}"
           PKG_NAME="lernbrief-hub"
-          ARCH="amd64"
+          ARCH="${{ matrix.arch }}"
           DOCROOT="/var/www/lernbriefe"
           ROOT="pkg/${PKG_NAME}_${VERSION}_${ARCH}"
           APP_DST="${ROOT}${DOCROOT}"
@@ -84,13 +92,25 @@ jobs:
           chmod 0755 "${ROOT}/DEBIAN/postinst"
 
           dpkg-deb --build "${ROOT}"
-          mv "${ROOT}.deb" "dist/lernbriefe-hub_web_${VERSION}.deb"
+          mv "${ROOT}.deb" "dist/lernbriefe-hub_web_${VERSION}_${ARCH}.deb"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: deb-package
+          name: ${{ matrix.artifact_name }}
           path: dist/*.deb
+
+  publish-release-assets:
+    runs-on: ubuntu-latest
+    needs: build-deb
+
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: deb-package-*
+          merge-multiple: true
+          path: dist
 
       - name: Install ORAS
         uses: oras-project/setup-oras@v1
@@ -98,17 +118,161 @@ jobs:
       - name: Login to GHCR
         run: echo "${{ secrets.GITHUB_TOKEN }}" | oras login ghcr.io -u "${{ github.actor }}" --password-stdin
 
-      - name: Publish .deb to GitHub Packages (GHCR)
+      - name: Publish .deb packages to GitHub Packages (GHCR)
         shell: bash
         run: |
           set -euo pipefail
-          VERSION="${{ steps.version.outputs.version }}"
-          DEB_FILE="$(ls dist/*.deb | head -n 1)"
-          PKG_REF="ghcr.io/${{ github.repository_owner }}/lernbrief-hub-deb:${VERSION}"
+          VERSION="${{ github.event.release.tag_name }}"
+          for DEB_FILE in dist/*.deb; do
+            DEB_BASENAME="$(basename "$DEB_FILE")"
+            ARCH="${DEB_BASENAME##*_}"
+            ARCH="${ARCH%.deb}"
+            PKG_REF="ghcr.io/${{ github.repository_owner }}/lernbrief-hub-deb:${VERSION}-${ARCH}"
 
-          oras push "${PKG_REF}" \
-            --artifact-type application/vnd.debian.binary-package \
-            "${DEB_FILE}:application/vnd.debian.binary-package"
+            oras push "${PKG_REF}" \
+              --artifact-type application/vnd.debian.binary-package \
+              "${DEB_FILE}:application/vnd.debian.binary-package"
+          done
+
+      - name: Attach to GitHub Release (only tags)
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.deb
+name: Build Debian Package
+
+on:
+  release:
+    types:
+      - published
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  build-deb:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            artifact_name: deb-package-amd64
+          - arch: arm64
+            artifact_name: deb-package-arm64
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y dpkg-dev fakeroot rsync
+
+      - name: Resolve package version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          VERSION="${{ github.event.release.tag_name }}"
+          if ! printf '%s' "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "Release-Tag muss exakt im Format X.Y.Z sein (z. B. 1.1.0), erhalten: $VERSION" >&2
+            exit 1
+          fi
+
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Resolved package version: $VERSION"
+
+      - name: Build .deb
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          VERSION="${{ steps.version.outputs.version }}"
+          PKG_NAME="lernbrief-hub"
+          ARCH="${{ matrix.arch }}"
+          DOCROOT="/var/www/lernbriefe"
+          ROOT="pkg/${PKG_NAME}_${VERSION}_${ARCH}"
+          APP_DST="${ROOT}${DOCROOT}"
+
+          mkdir -p "${ROOT}/DEBIAN" "${APP_DST}" dist
+
+          rsync -a ./ "${APP_DST}/" \
+            --exclude ".git" \
+            --exclude ".github" \
+            --exclude "tmp" \
+            --exclude "lernbrief_hub.db" \
+            --exclude "build" \
+            --exclude "pkg" \
+            --exclude "dist"
+
+          cat > "${ROOT}/DEBIAN/control" <<EOF
+          Package: ${PKG_NAME}
+          Version: ${VERSION}
+          Section: web
+          Priority: optional
+          Architecture: ${ARCH}
+          Maintainer: Dein Name <you@example.com>
+          Depends: php (>= 8.1), php-sqlite3
+          Description: Lernbrief-Hub Webanwendung
+           Webanwendung zur Bewertung und Lernbrief-Erstellung.
+          EOF
+
+          cat > "${ROOT}/DEBIAN/postinst" <<'EOF'
+          #!/bin/sh
+          set -e
+          install -d -m 755 -o www-data -g www-data /var/www/lernbriefe || true
+          chown -R www-data:www-data /var/www/lernbriefe || true
+          install -d -m 775 -o www-data -g www-data /var/lib/lernbrief-hub || true
+          install -d -m 775 -o www-data -g www-data /var/log/lernbrief-hub || true
+          exit 0
+          EOF
+          chmod 0755 "${ROOT}/DEBIAN/postinst"
+
+          dpkg-deb --build "${ROOT}"
+          mv "${ROOT}.deb" "dist/lernbriefe-hub_web_${VERSION}_${ARCH}.deb"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: dist/*.deb
+
+  publish-release-assets:
+    runs-on: ubuntu-latest
+    needs: build-deb
+
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: deb-package-*
+          merge-multiple: true
+          path: dist
+
+      - name: Install ORAS
+        uses: oras-project/setup-oras@v1
+
+      - name: Login to GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | oras login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Publish .deb packages to GitHub Packages (GHCR)
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${{ github.event.release.tag_name }}"
+          for DEB_FILE in dist/*.deb; do
+            DEB_BASENAME="$(basename "$DEB_FILE")"
+            ARCH="${DEB_BASENAME##*_}"
+            ARCH="${ARCH%.deb}"
+            PKG_REF="ghcr.io/${{ github.repository_owner }}/lernbrief-hub-deb:${VERSION}-${ARCH}"
+
+            oras push "${PKG_REF}" \
+              --artifact-type application/vnd.debian.binary-package \
+              "${DEB_FILE}:application/vnd.debian.binary-package"
+          done
 
       - name: Attach to GitHub Release (only tags)
         uses: softprops/action-gh-release@v2
