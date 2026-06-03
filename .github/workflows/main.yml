@@ -95,7 +95,7 @@ jobs:
           chmod 0755 "${ROOT}/DEBIAN/postinst"
 
           dpkg-deb --build "${ROOT}"
-          mv "${ROOT}.deb" "dist/${PKG_NAME}_${VERSION}_${ARCH}.deb"
+          mv "${ROOT}.deb" "dist/lernbriefe-hub_web_${VERSION}.deb"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
