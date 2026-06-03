@@ -1,0 +1,86 @@
+name: Build Debian Package
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-deb:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y dpkg-dev fakeroot rsync
+
+      - name: Build .deb
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          VERSION="${GITHUB_REF_NAME:-manual}"
+          VERSION="${VERSION#v}"
+          if [ "$VERSION" = "manual" ]; then
+            VERSION="1.0.0-manual.${GITHUB_RUN_NUMBER}"
+          fi
+
+          PKG_NAME="lernbrief-hub"
+          ARCH="amd64"
+          ROOT="pkg/${PKG_NAME}_${VERSION}_${ARCH}"
+          APP_DST="${ROOT}/opt/${PKG_NAME}"
+
+          mkdir -p "${ROOT}/DEBIAN" "${APP_DST}" dist
+
+          rsync -a ./ "${APP_DST}/" \
+            --exclude ".git" \
+            --exclude ".github" \
+            --exclude "tmp" \
+            --exclude "lernbrief_hub.db" \
+            --exclude "build" \
+            --exclude "pkg" \
+            --exclude "dist"
+
+          cat > "${ROOT}/DEBIAN/control" <<EOF
+          Package: ${PKG_NAME}
+          Version: ${VERSION}
+          Section: web
+          Priority: optional
+          Architecture: ${ARCH}
+          Maintainer: Dein Name <you@example.com>
+          Depends: php (>= 8.1), php-sqlite3
+          Description: Lernbrief-Hub Webanwendung
+           Webanwendung zur Bewertung und Lernbrief-Erstellung.
+          EOF
+
+          cat > "${ROOT}/DEBIAN/postinst" <<'EOF'
+          #!/bin/sh
+          set -e
+          install -d -m 775 -o www-data -g www-data /var/lib/lernbrief-hub || true
+          install -d -m 775 -o www-data -g www-data /var/log/lernbrief-hub || true
+          exit 0
+          EOF
+          chmod 0755 "${ROOT}/DEBIAN/postinst"
+
+          dpkg-deb --build "${ROOT}"
+          mv "${ROOT}.deb" "dist/${PKG_NAME}_${VERSION}_${ARCH}.deb"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: deb-package
+          path: dist/*.deb
+
+      - name: Attach to GitHub Release (only tags)
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.deb
