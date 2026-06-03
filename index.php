@@ -832,7 +832,7 @@ function build_letter(int $studentId, string $semester): string
     }
     if ($intro && trim((string)$intro['intro_text']) !== '') {
         $parts[] = plain_text_to_letter_html((string)$intro['intro_text'], true);
-        $parts[] = '<div class="sentence-break"><br></div>';
+        $parts[] = '<div class="intro-gap"></div>';
     }
     if ($headerPosition === 'after_intro') {
         $parts[] = "<div class='letter-header'>" . ensure_block_html($header) . "</div>";
@@ -1221,7 +1221,7 @@ function letter_template_preview_html(array $tpl): string
         }
     }
     $parts[] = '<p>Dies ist ein Beispieltext fuer den Halbjahreseindruck der Lerngruppe.</p>';
-    $parts[] = '<div class="sentence-break"><br></div>';
+    $parts[] = '<div class="intro-gap"></div>';
     if ($headerPosition === 'after_intro') {
         $parts[] = "<div class='letter-header'>" . ensure_block_html($header) . "</div>";
     }
@@ -1760,6 +1760,7 @@ function export_document_html(string $content, array $letter = []): string
         p { margin: 0; }
         h1, h2, h3 { margin: 0 0 12pt 0; font-weight: bold; }
         ul, ol { margin: 0 0 0 22pt; }
+        .intro-gap { height: 1.35em; }
         .sentence-break { height: 1.35em; }
         .letter-header { margin-bottom: 10pt; }
         .letter-footer { margin-top: 10pt; }
@@ -1787,6 +1788,7 @@ function export_word_compatible_html(string $content, array $letter = []): strin
         . 'h1, h2, h3 { margin: 0 0 12pt 0; font-weight: bold; }'
         . 'p, p.MsoNormal { margin: 0cm !important; margin-top: 0cm !important; margin-bottom: 0cm !important; mso-margin-top-alt: 0cm; mso-margin-bottom-alt: 0cm; }'
         . 'div.lb-paragraph { margin: 0cm !important; margin-top: 0cm !important; margin-bottom: 0cm !important; }'
+        . 'div.intro-gap { height: 0.55cm; line-height: 100%; margin: 0cm !important; }'
         . 'div.sentence-break { height: 0.55cm; line-height: 100%; margin: 0cm !important; }'
         . 'ul, ol { margin-top: 0; margin-bottom: 0; }'
         . '.letter-header { margin-bottom: 10pt; }'

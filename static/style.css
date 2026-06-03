@@ -276,6 +276,12 @@ th {
     padding: 1.25rem;
 }
 
+.intro-gap,
+.sentence-break {
+    display: block;
+    height: 1.35em;
+}
+
 .export-meta {
     margin-top: 1.5rem;
     padding-top: 1rem;
