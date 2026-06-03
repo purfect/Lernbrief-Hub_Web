@@ -832,7 +832,6 @@ function build_letter(int $studentId, string $semester): string
     }
     if ($intro && trim((string)$intro['intro_text']) !== '') {
         $parts[] = plain_text_to_letter_html((string)$intro['intro_text'], true);
-        $parts[] = '<p class="intro-break">&nbsp;</p>';
     }
     if ($headerPosition === 'after_intro') {
         $parts[] = "<div class='letter-header'>" . ensure_block_html($header) . "</div>";
@@ -846,7 +845,7 @@ function build_letter(int $studentId, string $semester): string
             $sentence .= ' Hinweis: ' . $row['note'];
         }
         $parts[] = '<p>' . h(ensure_sentence_punctuation(implode(' ', array_filter(array_map('trim', preg_split('/\R/', $sentence) ?: []))))) . '</p>';
-        $parts[] = '<p class="sentence-break">&nbsp;</p>';
+        $parts[] = '<div class="sentence-break"><br></div>';
     }
     if ($footerPosition === 'bottom') {
         foreach ($footerParts as $part) {
@@ -1205,9 +1204,9 @@ function letter_template_preview_html(array $tpl): string
         $footerParts[] = $customFooter;
     }
     $ratings = [
-        '<p>In Fachwissen arbeitet Max sicher mit den Grundlagen und kann Gelerntes zunehmend selbststaendig anwenden.</p><p class="sentence-break">&nbsp;</p>',
-        '<p>In Mitarbeit beteiligt sich Max regelmaessig und bringt passende Beitraege in Unterrichtsgespraeche ein.</p><p class="sentence-break">&nbsp;</p>',
-        '<p>In Selbstorganisation gelingt es Max, Aufgaben sorgfaeltig zu planen und rechtzeitig abzugeben.</p><p class="sentence-break">&nbsp;</p>',
+        '<p>In Fachwissen arbeitet Max sicher mit den Grundlagen und kann Gelerntes zunehmend selbststaendig anwenden.</p><div class="sentence-break"><br></div>',
+        '<p>In Mitarbeit beteiligt sich Max regelmaessig und bringt passende Beitraege in Unterrichtsgespraeche ein.</p><div class="sentence-break"><br></div>',
+        '<p>In Selbstorganisation gelingt es Max, Aufgaben sorgfaeltig zu planen und rechtzeitig abzugeben.</p><div class="sentence-break"><br></div>',
     ];
     $parts = [];
     $headerPosition = in_array($tpl['header_position'] ?? 'top', ['top', 'after_intro'], true) ? $tpl['header_position'] : 'top';
@@ -1221,7 +1220,6 @@ function letter_template_preview_html(array $tpl): string
         }
     }
     $parts[] = '<p>Dies ist ein Beispieltext fuer den Halbjahreseindruck der Lerngruppe.</p>';
-    $parts[] = '<p class="intro-break">&nbsp;</p>';
     if ($headerPosition === 'after_intro') {
         $parts[] = "<div class='letter-header'>" . ensure_block_html($header) . "</div>";
     }
@@ -1760,6 +1758,7 @@ function export_document_html(string $content, array $letter = []): string
         p { margin: 0; }
         h1, h2, h3 { margin: 0 0 12pt 0; font-weight: bold; }
         ul, ol { margin: 0 0 0 22pt; }
+        .sentence-break { height: 1.35em; }
         .letter-header { margin-bottom: 10pt; }
         .letter-footer { margin-top: 10pt; }
         .export-meta { margin-top: 22pt; padding-top: 12pt; border-top: 1px solid #777; }
@@ -1786,6 +1785,7 @@ function export_word_compatible_html(string $content, array $letter = []): strin
         . 'h1, h2, h3 { margin: 0 0 12pt 0; font-weight: bold; }'
         . 'p, p.MsoNormal { margin: 0cm !important; margin-top: 0cm !important; margin-bottom: 0cm !important; mso-margin-top-alt: 0cm; mso-margin-bottom-alt: 0cm; }'
         . 'div.lb-paragraph { margin: 0cm !important; margin-top: 0cm !important; margin-bottom: 0cm !important; }'
+        . 'div.sentence-break { height: 0.55cm; line-height: 100%; margin: 0cm !important; }'
         . 'ul, ol { margin-top: 0; margin-bottom: 0; }'
         . '.letter-header { margin-bottom: 10pt; }'
         . '.letter-footer { margin-top: 10pt; }'
