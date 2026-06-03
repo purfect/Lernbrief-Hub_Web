@@ -1771,8 +1771,8 @@ function export_document_html(string $content, array $letter = []): string
 
 function export_word_compatible_html(string $content, array $letter = []): string
 {
-    $body = word_blockify_paragraphs(normalize_export_html($content));
-    $signature = word_blockify_paragraphs(export_signature_html($letter));
+    $body = word_blockify_paragraphs(normalize_word_export_html($content));
+    $signature = word_blockify_paragraphs(normalize_word_export_html(export_signature_html($letter)));
     $font = trim((string)($letter['body_font_family'] ?? ''));
     $font = preg_replace('/[^a-zA-Z0-9,\s"\-]/', '', $font) ?? $font;
     $font = $font !== '' ? $font : 'Times New Roman';
@@ -1805,6 +1805,14 @@ function normalize_export_html(string $html): string
     $html = preg_replace('/<p>\s*<\/p>/i', '', $html) ?? $html;
     $html = preg_replace('/<\/p>\s*<p>/i', '</p><p>', $html) ?? $html;
     return $html;
+}
+
+function normalize_word_export_html(string $html): string
+{
+    // Keep <br> tags intact for Word/LibreOffice imports; global paragraph
+    // conversion can swallow explicit break markers in .doc output.
+    $html = preg_replace('/<p>\s*<\/p>/i', '', $html) ?? $html;
+    return preg_replace('/<\/p>\s*<p>/i', '</p><p>', $html) ?? $html;
 }
 
 function word_blockify_paragraphs(string $html): string
