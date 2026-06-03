@@ -37,6 +37,8 @@ CREATE TABLE IF NOT EXISTS groups (
 CREATE TABLE IF NOT EXISTS students (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     group_id INTEGER NOT NULL,
+    first_name TEXT NOT NULL DEFAULT '',
+    last_name TEXT NOT NULL DEFAULT '',
     full_name TEXT NOT NULL,
     is_active INTEGER NOT NULL DEFAULT 1,
     FOREIGN KEY (group_id) REFERENCES groups(id) ON DELETE CASCADE
@@ -143,8 +145,22 @@ SQL);
     }
 
     $studentCols = array_column($db->query('PRAGMA table_info(students)')->fetchAll(), 'name');
+    if (!in_array('first_name', $studentCols, true)) {
+        $db->exec("ALTER TABLE students ADD COLUMN first_name TEXT NOT NULL DEFAULT ''");
+    }
+    if (!in_array('last_name', $studentCols, true)) {
+        $db->exec("ALTER TABLE students ADD COLUMN last_name TEXT NOT NULL DEFAULT ''");
+    }
     if (!in_array('is_active', $studentCols, true)) {
         $db->exec("ALTER TABLE students ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1");
+    }
+
+    foreach ($db->query("SELECT id, full_name, first_name, last_name FROM students WHERE TRIM(COALESCE(first_name, '')) = '' OR TRIM(COALESCE(last_name, '')) = ''")->fetchAll() as $row) {
+        [$first, $last] = split_full_name((string)($row['full_name'] ?? ''));
+        $firstOut = trim((string)($row['first_name'] ?? ''));
+        $lastOut = trim((string)($row['last_name'] ?? ''));
+        $db->prepare('UPDATE students SET first_name = ?, last_name = ? WHERE id = ?')
+            ->execute([$firstOut !== '' ? $firstOut : $first, $lastOut !== '' ? $lastOut : $last, (int)$row['id']]);
     }
 
     $templateCols = array_column($db->query('PRAGMA table_info(letter_templates)')->fetchAll(), 'name');
@@ -225,6 +241,23 @@ function setting_insert(string $key, string $value): void
 function h(mixed $value): string
 {
     return htmlspecialchars((string)$value, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+}
+
+function split_full_name(string $fullName): array
+{
+    $name = trim(preg_replace('/\s+/', ' ', $fullName) ?? $fullName);
+    if ($name === '') {
+        return ['', ''];
+    }
+    $parts = explode(' ', $name);
+    $first = (string)(array_shift($parts) ?? '');
+    $last = trim(implode(' ', $parts));
+    return [$first, $last];
+}
+
+function build_full_name(string $firstName, string $lastName): string
+{
+    return trim(trim($firstName) . ' ' . trim($lastName));
 }
 
 function current_http_user(): string
@@ -435,10 +468,21 @@ function active_letter_template(): array
 
 function export_signature_values(array $letter = [], array $tpl = []): array
 {
+    $firstName = trim((string)($letter['first_name'] ?? ''));
+    $lastName = trim((string)($letter['last_name'] ?? ''));
+    if ($firstName === '') {
+        [$firstParsed, $lastParsed] = split_full_name((string)($letter['full_name'] ?? ''));
+        $firstName = $firstParsed;
+        if ($lastName === '') {
+            $lastName = $lastParsed;
+        }
+    }
     return [
         'date' => date('d.m.Y'),
         'iso_date' => date('Y-m-d'),
-        'name' => (string)($letter['full_name'] ?? 'Max Beispiel'),
+        'name' => $firstName !== '' ? $firstName : (string)($letter['full_name'] ?? 'Max Beispiel'),
+        'first_name' => $firstName,
+        'last_name' => $lastName,
         'full_name' => (string)($letter['full_name'] ?? 'Max Beispiel'),
         'semester' => (string)($letter['semester'] ?? default_semester()),
         'template_name' => (string)($tpl['name'] ?? $letter['template_name'] ?? 'Standard'),
@@ -771,7 +815,7 @@ function avg_text(float $grade): string
 function build_letter(int $studentId, string $semester): string
 {
     $student = one('
-        SELECT s.id, s.group_id, s.full_name, g.name AS group_name
+        SELECT s.id, s.group_id, s.first_name, s.last_name, s.full_name, g.name AS group_name
             FROM students s JOIN groups g ON g.id = s.group_id
             WHERE s.id = ?
               AND COALESCE(g.is_active, 1) = 1
@@ -791,8 +835,19 @@ function build_letter(int $studentId, string $semester): string
     }
 
     $avg = round(array_sum(array_map(fn($r) => (int)$r['grade'], $ratings)) / count($ratings), 2);
+    $firstName = trim((string)($student['first_name'] ?? ''));
+    $lastName = trim((string)($student['last_name'] ?? ''));
+    if ($firstName === '') {
+        [$firstParsed, $lastParsed] = split_full_name((string)$student['full_name']);
+        $firstName = $firstParsed;
+        if ($lastName === '') {
+            $lastName = $lastParsed;
+        }
+    }
     $values = [
-        'name' => $student['full_name'],
+        'name' => $firstName !== '' ? $firstName : $student['full_name'],
+        'first_name' => $firstName,
+        'last_name' => $lastName,
         'full_name' => $student['full_name'],
         'group_name' => $student['group_name'],
         'semester' => $semester,
@@ -843,7 +898,7 @@ function build_letter(int $studentId, string $semester): string
     foreach ($ratings as $row) {
         $candidates = all('SELECT sentence FROM sentence_templates WHERE competency_id = ? AND grade = ? ORDER BY id ASC', [$row['competency_id'], $row['grade']]);
         $sentence = $candidates ? $candidates[array_rand($candidates)]['sentence'] : "In {$row['competency_name']} liegt die Leistung bei der Note {$row['grade']}.";
-        $sentence = str_replace('{name}', (string)$student['full_name'], (string)$sentence);
+        $sentence = safe_format((string)$sentence, $values);
         $parts[] = '<p>' . h(ensure_sentence_punctuation(implode(' ', array_filter(array_map('trim', preg_split('/\R/', $sentence) ?: []))))) . '</p>';
         $parts[] = '<div class="sentence-break"><br></div>';
     }
@@ -1092,7 +1147,7 @@ function page_group_show(): void
     $options = school_semester_options();
     $intro = one('SELECT intro_text FROM group_semester_intros WHERE group_id = ? AND semester = ?', [$id, $semester]);
     layout('index', function () use ($group, $students, $inactiveStudents, $semester, $options, $intro) { ?>
-<section class="panel"><h2>Lerngruppe: <?= h($group['name']) ?></h2><form action="<?= route('/students/create', ['group_id' => $group['id']]) ?>" method="post" class="inline-form"><input type="text" name="full_name" placeholder="Schuelername" required><button type="submit">Schueler hinzufuegen</button></form></section>
+<section class="panel"><h2>Lerngruppe: <?= h($group['name']) ?></h2><form action="<?= route('/students/create', ['group_id' => $group['id']]) ?>" method="post" class="inline-form"><input type="text" name="first_name" placeholder="Vorname" required><input type="text" name="last_name" placeholder="Nachname" required><button type="submit">Schueler hinzufuegen</button></form></section>
 <section class="panel"><h3>Halbjahrestext der Lerngruppe</h3><p>Dieser Einfuehrungstext wird im Lernbrief aller Schueler dieser Lerngruppe fuer das ausgewaehlte Halbjahr unterhalb des Headers eingefuegt.</p>
 <form method="get" class="inline-form"><input type="hidden" name="r" value="/groups/show"><input type="hidden" name="id" value="<?= h($group['id']) ?>"><label for="semester">Halbjahr:</label><select id="semester" name="semester"><?php foreach ($options as $o): ?><option value="<?= h($o) ?>" <?= $o === $semester ? 'selected' : '' ?>><?= h($o) ?></option><?php endforeach; ?></select><button type="submit">Laden</button></form>
 <form method="post" action="<?= route('/groups/semester-text', ['id' => $group['id']]) ?>" class="grid-form"><input type="hidden" name="semester" value="<?= h($semester) ?>"><textarea name="semester_intro_text" class="semester-textarea" rows="4" placeholder="Optional"><?= h($intro['intro_text'] ?? '') ?></textarea><button type="submit">Halbjahrestext speichern</button></form></section>
@@ -1115,7 +1170,7 @@ function page_templates(): void
     $rows = all('SELECT st.id, st.grade, st.sentence, c.name AS competency_name, c.id AS competency_id FROM sentence_templates st JOIN competencies c ON c.id = st.competency_id WHERE st.grade BETWEEN 1 AND 5 ORDER BY c.sort_order ASC, c.name ASC, st.grade ASC');
     $competencies = query_competencies();
     layout('templates', function () use ($rows, $competencies) { ?>
-<section class="panel"><h2>Satzbausteine nach Note</h2><p>Hinweis: Mit <strong>{name}</strong> kann der Schuelername im Satz verwendet werden.</p><a class="button-link" href="<?= route('/letter-templates') ?>">Zu den Lernbriefvorlagen</a></section>
+<section class="panel"><h2>Satzbausteine nach Note</h2><p>Hinweis: Mit <strong>{name}</strong> (Vorname), <strong>{first_name}</strong>, <strong>{last_name}</strong> und <strong>{full_name}</strong> kann der Schuelername im Satz verwendet werden.</p><a class="button-link" href="<?= route('/letter-templates') ?>">Zu den Lernbriefvorlagen</a></section>
 <section class="panel"><h3>Neuen Satzbaustein hinzufuegen</h3><form method="post" action="<?= route('/templates/save') ?>" class="grid-form"><input type="hidden" name="action" value="create"><select name="competency_id" required><option value="">Kompetenz waehlen</option><?php foreach ($competencies as $comp): ?><option value="<?= h($comp['id']) ?>"><?= h($comp['name']) ?></option><?php endforeach; ?></select><select name="grade" required><option value="">Note</option><?php foreach (GRADE_OPTIONS as $grade): ?><option value="<?= $grade ?>"><?= $grade ?></option><?php endforeach; ?></select><textarea name="sentence" rows="2" placeholder="Satzbaustein" required></textarea><button type="submit">Hinzufuegen</button></form></section>
 <section class="panel"><h3>Bestehende Satzbausteine</h3><table><thead><tr><th>Kompetenz</th><th>Note</th><th>Satz</th><th>Speichern</th><th>Loeschen</th></tr></thead><tbody><?php foreach ($rows as $row): ?><tr><td><?= h($row['competency_name']) ?></td><td><?= h($row['grade']) ?></td><td><form method="post" action="<?= route('/templates/save') ?>" class="inline-row-form"><input type="hidden" name="action" value="update"><input type="hidden" name="template_id" value="<?= h($row['id']) ?>"><textarea name="sentence" rows="2" required><?= h($row['sentence']) ?></textarea></td><td><button type="submit">Speichern</button></form></td><td><form method="post" action="<?= route('/templates/save') ?>"><input type="hidden" name="action" value="delete"><input type="hidden" name="template_id" value="<?= h($row['id']) ?>"><button type="submit">Loeschen</button></form></td></tr><?php endforeach; ?><?php if (!$rows): ?><tr><td colspan="5">Noch keine Satzbausteine vorhanden.</td></tr><?php endif; ?></tbody></table></section><?php });
 }
@@ -1136,10 +1191,10 @@ function page_letter_templates(): void
 <section class="panel"><h2>Lernbriefvorlagen</h2><p>Hier bearbeitest du komplette Lernbriefvorlagen mit Layout und Textstil. Platzhalter werden beim Generieren automatisch ersetzt.</p><form method="post" action="<?= route('/letter-templates/save') ?>" class="inline-form"><input type="hidden" name="action" value="create"><input type="text" name="new_template_name" placeholder="Neue Vorlagenbezeichnung" required><button type="submit">Vorlage anlegen</button></form></section>
 <?php if ($selected): ?><section class="panel"><div class="template-tabs" role="tablist"><?php foreach ($templates as $tpl): ?><a class="template-tab <?= (int)$tpl['id'] === (int)$selected['id'] ? 'active' : '' ?>" href="<?= route('/letter-templates', ['template_id' => $tpl['id']]) ?>"><?= h($tpl['name']) ?><?= (int)$tpl['is_active'] ? ' (aktiv)' : '' ?></a><?php endforeach; ?></div>
 <form method="post" action="<?= route('/letter-templates/save') ?>" class="template-config-form"><input type="hidden" name="template_id" value="<?= h($selected['id']) ?>"><div class="inline-form"><input type="text" name="name" value="<?= h($selected['name']) ?>" required><button type="submit" name="action" value="save">Vorlage speichern</button><button type="submit" name="action" value="activate">Als aktiv setzen</button><button type="submit" name="action" value="delete" onclick="return confirm('Diese Vorlage wirklich loeschen?')">Loeschen</button><a class="button-link" href="<?= route('/letter-templates/preview', ['template_id'=>$selected['id']]) ?>" target="_blank">Vorschau</a></div>
-<div class="template-config-grid"><article class="template-card"><h4>Header</h4><p class="template-help">Position und Inhalt des Kopfbereichs.</p><label>Header-Position</label><select name="header_position"><option value="top" <?= $selected['header_position']==='top'?'selected':'' ?>>Ganz oben</option><option value="after_intro" <?= $selected['header_position']==='after_intro'?'selected':'' ?>>Nach Einleitung</option></select><?= rich_editor('header_html', (string)$selected['header_html'], true) ?><div class="placeholder-chips"><span>{name}</span><span>{full_name}</span><span>{group_name}</span><span>{semester}</span><span>{avg_grade}</span><span>{avg_text}</span></div></article>
+<div class="template-config-grid"><article class="template-card"><h4>Header</h4><p class="template-help">Position und Inhalt des Kopfbereichs.</p><label>Header-Position</label><select name="header_position"><option value="top" <?= $selected['header_position']==='top'?'selected':'' ?>>Ganz oben</option><option value="after_intro" <?= $selected['header_position']==='after_intro'?'selected':'' ?>>Nach Einleitung</option></select><?= rich_editor('header_html', (string)$selected['header_html'], true) ?><div class="placeholder-chips"><span>{name}</span><span>{first_name}</span><span>{last_name}</span><span>{full_name}</span><span>{group_name}</span><span>{semester}</span><span>{avg_grade}</span><span>{avg_text}</span></div></article>
 <article class="template-card"><h4>Footer</h4><p class="template-help">Abschlussbereich und optionaler Durchschnittssatz.</p><label>Footer-Position</label><select name="footer_position"><option value="bottom" <?= $selected['footer_position']==='bottom'?'selected':'' ?>>Am Ende</option><option value="after_header" <?= $selected['footer_position']==='after_header'?'selected':'' ?>>Direkt nach Header</option></select><label class="toggle-row"><input type="checkbox" name="include_average_sentence" <?= (int)$selected['include_average_sentence'] ? 'checked' : '' ?>> Satz mit Durchschnitt anzeigen</label><label>Durchschnittssatz</label><textarea name="average_sentence_template" rows="3" required><?= h($selected['average_sentence_template']) ?></textarea><?= rich_editor('footer_html', (string)$selected['footer_html'], false) ?></article></div>
 <section class="panel template-layout-panel"><h4>Einheitlicher Textstil fuer Satzbausteine</h4><div class="inline-form"><label for="body_font_family">Schriftart</label><select id="body_font_family" name="body_font_family"><?php foreach (['Arial','Georgia','Times New Roman','Verdana','Calibri'] as $font): ?><option value="<?= h($font) ?>" <?= $selected['body_font_family']===$font?'selected':'' ?>><?= h($font) ?></option><?php endforeach; ?></select><label for="body_font_size">Schriftgroesse</label><input id="body_font_size" type="number" name="body_font_size" min="4" max="28" value="<?= h($selected['body_font_size']) ?>"></div></section>
-<section class="panel template-layout-panel"><h4>Export-Abschluss</h4><label class="toggle-row"><input type="checkbox" name="include_export_signature" <?= (int)($selected['include_export_signature'] ?? 1) ? 'checked' : '' ?>> Abschluss mit Datum / Unterschrift im PDF- und Word-Export anzeigen</label><label>Format</label><textarea name="export_signature_template" rows="4"><?= h($selected['export_signature_template'] ?? 'Datum: {date}<br><br>Unterschrift: ______________________________') ?></textarea><div class="placeholder-chips"><span>{date}</span><span>{iso_date}</span><span>{name}</span><span>{full_name}</span><span>{semester}</span><span>{template_name}</span></div></section></form></section><script src="static/rich_editor.js"></script><?php endif; ?><?php });
+<section class="panel template-layout-panel"><h4>Export-Abschluss</h4><label class="toggle-row"><input type="checkbox" name="include_export_signature" <?= (int)($selected['include_export_signature'] ?? 1) ? 'checked' : '' ?>> Abschluss mit Datum / Unterschrift im PDF- und Word-Export anzeigen</label><label>Format</label><textarea name="export_signature_template" rows="4"><?= h($selected['export_signature_template'] ?? 'Datum: {date}<br><br>Unterschrift: ______________________________') ?></textarea><div class="placeholder-chips"><span>{date}</span><span>{iso_date}</span><span>{name}</span><span>{first_name}</span><span>{last_name}</span><span>{full_name}</span><span>{semester}</span><span>{template_name}</span></div></section></form></section><script src="static/rich_editor.js"></script><?php endif; ?><?php });
 }
 
 function rich_editor(string $name, string $html, bool $withSize): string
@@ -1188,7 +1243,9 @@ function letter_template_preview_html(array $tpl): string
 {
     $avg = 2.4;
     $values = [
-        'name' => 'Max Beispiel',
+        'name' => 'Max',
+        'first_name' => 'Max',
+        'last_name' => 'Beispiel',
         'full_name' => 'Max Beispiel',
         'group_name' => 'Beispielgruppe 7a',
         'semester' => default_semester(),
@@ -1231,7 +1288,7 @@ function letter_template_preview_html(array $tpl): string
             $parts[] = "<div class='letter-footer'>" . ensure_block_html($part) . "</div>";
         }
     }
-    $signature = export_signature_html(['full_name' => 'Max Beispiel', 'semester' => default_semester(), 'template_name' => $tpl['name']], $tpl);
+    $signature = export_signature_html(['first_name' => 'Max', 'last_name' => 'Beispiel', 'full_name' => 'Max Beispiel', 'semester' => default_semester(), 'template_name' => $tpl['name']], $tpl);
     if ($signature !== '') {
         $parts[] = $signature;
     }
@@ -1561,9 +1618,16 @@ function handle_actions(string $r): void
     }
     if ($r === '/students/create') {
         $gid = (int)($_GET['group_id'] ?? 0);
-        $name = post('full_name');
-        if ($name === '') flash('Bitte einen Schuelernamen eingeben.', 'error');
-        else { $db->prepare('INSERT INTO students (group_id, full_name) VALUES (?, ?)')->execute([$gid, $name]); audit_log('create', 'student', (int)$db->lastInsertId(), ['group_id'=>$gid,'name'=>$name]); flash('Schueler hinzugefuegt.'); }
+        $firstName = post('first_name');
+        $lastName = post('last_name');
+        $name = build_full_name($firstName, $lastName);
+        if ($firstName === '' || $lastName === '') {
+            flash('Bitte Vor- und Nachnamen eingeben.', 'error');
+        } else {
+            $db->prepare('INSERT INTO students (group_id, first_name, last_name, full_name) VALUES (?, ?, ?, ?)')->execute([$gid, $firstName, $lastName, $name]);
+            audit_log('create', 'student', (int)$db->lastInsertId(), ['group_id'=>$gid,'name'=>$name]);
+            flash('Schueler hinzugefuegt.');
+        }
         redirect_to('/groups/show', ['id' => $gid]);
     }
     if ($r === '/students/deactivate' || $r === '/students/reactivate') {
@@ -1741,7 +1805,7 @@ function restore_backup_action(): void
 function export_pdf(int $id): never
 {
     try {
-        $letter = one('SELECT l.*, s.full_name FROM letters l JOIN students s ON s.id = l.student_id WHERE l.id = ?', [$id]);
+        $letter = one('SELECT l.*, s.first_name, s.last_name, s.full_name FROM letters l JOIN students s ON s.id = l.student_id WHERE l.id = ?', [$id]);
         if (!$letter) { flash('Lernbrief nicht gefunden.', 'error'); redirect_to('/'); }
         if (class_exists('\\Mpdf\\Mpdf') && extension_loaded('mbstring')) {
             try {
@@ -1801,7 +1865,7 @@ function export_failure_response(string $type, string $message): never
 function export_word(int $id): never
 {
     try {
-        $letter = one('SELECT l.*, s.full_name FROM letters l JOIN students s ON s.id = l.student_id WHERE l.id = ?', [$id]);
+        $letter = one('SELECT l.*, s.first_name, s.last_name, s.full_name FROM letters l JOIN students s ON s.id = l.student_id WHERE l.id = ?', [$id]);
         if (!$letter) { flash('Lernbrief nicht gefunden.', 'error'); redirect_to('/'); }
         // Legacy Word HTML is more robust in older Word versions and LibreOffice.
         download_bytes(
@@ -1821,7 +1885,7 @@ function export_odt(int $id): never
         if (!class_exists('ZipArchive') || !extension_loaded('zip')) {
             throw new RuntimeException('ODT-Export benoetigt die PHP-Extension zip.');
         }
-        $letter = one('SELECT l.*, s.full_name FROM letters l JOIN students s ON s.id = l.student_id WHERE l.id = ?', [$id]);
+        $letter = one('SELECT l.*, s.first_name, s.last_name, s.full_name FROM letters l JOIN students s ON s.id = l.student_id WHERE l.id = ?', [$id]);
         if (!$letter) { flash('Lernbrief nicht gefunden.', 'error'); redirect_to('/'); }
         $bytes = build_odt_document((string)$letter['content'] . export_signature_html($letter));
         download_bytes(
