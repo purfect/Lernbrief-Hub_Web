@@ -1766,8 +1766,8 @@ function export_document_html(string $content, array $letter = []): string
 
 function export_word_compatible_html(string $content, array $letter = []): string
 {
-    $body = normalize_export_html($content);
-    $signature = export_signature_html($letter);
+    $body = word_blockify_paragraphs(normalize_export_html($content));
+    $signature = word_blockify_paragraphs(export_signature_html($letter));
     $font = trim((string)($letter['body_font_family'] ?? ''));
     $font = preg_replace('/[^a-zA-Z0-9,\s"\-]/', '', $font) ?? $font;
     $font = $font !== '' ? $font : 'Times New Roman';
@@ -1782,6 +1782,7 @@ function export_word_compatible_html(string $content, array $letter = []): strin
         . 'body, p, li, td { font-family: ' . h($font) . ', serif; font-size: ' . $sizePt . 'pt; line-height: 1.3; margin-top: 0cm; margin-bottom: 0cm; }'
         . 'h1, h2, h3 { margin: 0 0 12pt 0; font-weight: bold; }'
         . 'p, p.MsoNormal { margin: 0cm !important; margin-top: 0cm !important; margin-bottom: 0cm !important; mso-margin-top-alt: 0cm; mso-margin-bottom-alt: 0cm; }'
+        . 'div.lb-paragraph { margin: 0cm !important; margin-top: 0cm !important; margin-bottom: 0cm !important; }'
         . 'ul, ol { margin-top: 0; margin-bottom: 0; }'
         . '.letter-header { margin-bottom: 10pt; }'
         . '.letter-footer { margin-top: 10pt; }'
@@ -1797,6 +1798,15 @@ function normalize_export_html(string $html): string
     $html = preg_replace('/<p>\s*<\/p>/i', '', $html) ?? $html;
     $html = preg_replace('/<\/p>\s*<p>/i', '</p><p>', $html) ?? $html;
     return $html;
+}
+
+function word_blockify_paragraphs(string $html): string
+{
+    $html = preg_replace_callback('/<p(\s[^>]*)?>/i', static function (array $m): string {
+        $attrs = trim((string)($m[1] ?? ''));
+        return '<div class="lb-paragraph"' . ($attrs !== '' ? ' ' . $attrs : '') . '>';
+    }, $html) ?? $html;
+    return preg_replace('/<\/p>/i', '</div>', $html) ?? $html;
 }
 
 function pdf_stream_from_blocks(array $blocks): string
