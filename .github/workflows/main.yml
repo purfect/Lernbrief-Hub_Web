@@ -56,8 +56,9 @@ jobs:
           VERSION="${{ steps.version.outputs.version }}"
           PKG_NAME="lernbrief-hub"
           ARCH="amd64"
+          DOCROOT="/var/www/lernbriefe"
           ROOT="pkg/${PKG_NAME}_${VERSION}_${ARCH}"
-          APP_DST="${ROOT}/opt/${PKG_NAME}"
+          APP_DST="${ROOT}${DOCROOT}"
 
           mkdir -p "${ROOT}/DEBIAN" "${APP_DST}" dist
 
@@ -85,6 +86,8 @@ jobs:
           cat > "${ROOT}/DEBIAN/postinst" <<'EOF'
           #!/bin/sh
           set -e
+          install -d -m 755 -o www-data -g www-data /var/www/lernbriefe || true
+          chown -R www-data:www-data /var/www/lernbriefe || true
           install -d -m 775 -o www-data -g www-data /var/lib/lernbrief-hub || true
           install -d -m 775 -o www-data -g www-data /var/log/lernbrief-hub || true
           exit 0
