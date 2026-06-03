@@ -760,6 +760,114 @@ th {
     color: var(--muted);
 }
 
+.system-check-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(240px, 1fr));
+    gap: 0.8rem;
+}
+
+.system-check-card {
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: var(--panel-soft);
+    padding: 0.75rem 0.85rem;
+    display: flex;
+    gap: 0.7rem;
+    align-items: flex-start;
+}
+
+.system-check-card.ok {
+    border-color: #b8e1c9;
+    background: #eefaf3;
+}
+
+.system-check-card.warn {
+    border-color: #e7d2a5;
+    background: #fff7e6;
+}
+
+.system-check-icon {
+    font-size: 1rem;
+    line-height: 1;
+    margin-top: 0.15rem;
+}
+
+.system-check-card p {
+    margin: 0.2rem 0 0;
+    color: var(--muted);
+    font-size: 0.9rem;
+}
+
+.system-kpis {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(150px, 1fr));
+    gap: 0.8rem;
+    margin-bottom: 0.9rem;
+}
+
+.system-kpis div {
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: var(--panel-soft);
+    padding: 0.8rem;
+}
+
+.system-kpis strong {
+    display: block;
+    margin-top: 0.2rem;
+    font-size: 1.35rem;
+}
+
+.opcache-bars {
+    display: grid;
+    gap: 0.55rem;
+}
+
+.opcache-bar-row {
+    display: grid;
+    grid-template-columns: 68px 1fr 90px;
+    gap: 0.6rem;
+    align-items: center;
+}
+
+.opcache-bar {
+    height: 11px;
+    background: #e8edf5;
+    border-radius: 999px;
+    overflow: hidden;
+    border: 1px solid #d5deea;
+}
+
+.opcache-bar i {
+    display: block;
+    height: 100%;
+}
+
+.bar-used { background: #2f6fed; }
+.bar-free { background: #1f7b4a; }
+.bar-wasted { background: #b88310; }
+
+.system-two-col {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(280px, 1fr));
+    gap: 1rem;
+}
+
+:root[data-theme="dark"] .system-check-card.ok {
+    border-color: #286f45;
+    background: #113525;
+}
+
+:root[data-theme="dark"] .system-check-card.warn {
+    border-color: #7d6333;
+    background: #3a2d14;
+}
+
+:root[data-theme="dark"] .opcache-bar {
+    background: #1a2734;
+    border-color: #31465a;
+}
+
 @media (max-width: 820px) {
     .topbar {
         padding: 0.8rem 0.8rem 0.95rem;
@@ -799,7 +907,10 @@ th {
     .overview-stats,
     .overview-grid,
     .overview-kpis,
-    .data-actions-grid {
+    .data-actions-grid,
+    .system-check-grid,
+    .system-kpis,
+    .system-two-col {
         grid-template-columns: 1fr;
     }
 

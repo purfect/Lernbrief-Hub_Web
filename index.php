@@ -897,7 +897,8 @@ function layout(string $active, callable $content): void
             <a class="nav-pill <?= $active === 'competencies' ? 'active' : '' ?>" href="<?= route('/competencies') ?>">Kompetenzen</a>
             <a class="nav-pill <?= $active === 'templates' ? 'active' : '' ?>" href="<?= route('/templates') ?>">Satzbausteine</a>
             <a class="nav-pill <?= $active === 'letter_templates' ? 'active' : '' ?>" href="<?= route('/letter-templates') ?>">Lernbriefvorlagen</a>
-            <a class="nav-pill <?= $active === 'data' ? 'active' : '' ?>" href="<?= route('/data') ?>">Daten & Archiv</a>
+            <a class="nav-pill <?= $active === 'data' ? 'active' : '' ?>" href="<?= route('/data') ?>">Archiv</a>
+            <a class="nav-pill <?= $active === 'system' ? 'active' : '' ?>" href="<?= route('/system') ?>">System</a>
         </div>
     </nav>
 </header>
@@ -1393,7 +1394,6 @@ function page_letter_show(): void
 function page_data(): void
 {
     $archived = archived_semesters();
-    $exportChecks = export_system_checks();
     $auditRows = all('SELECT actor, action, entity_type, entity_id, details, created_at FROM audit_logs ORDER BY id DESC LIMIT 30');
     $rows = all('SELECT sem.semester, COALESCE(r.rating_count,0) AS rating_count, COALESCE(l.letter_count,0) AS letter_count FROM (SELECT semester FROM ratings UNION SELECT semester FROM letters) sem LEFT JOIN (SELECT semester, COUNT(*) AS rating_count FROM ratings GROUP BY semester) r ON r.semester = sem.semester LEFT JOIN (SELECT semester, COUNT(*) AS letter_count FROM letters GROUP BY semester) l ON l.semester = sem.semester ORDER BY sem.semester DESC');
     $activeGroups = all('
@@ -1412,13 +1412,105 @@ function page_data(): void
         GROUP BY g.id, g.name, g.archived_name
         ORDER BY display_name ASC
     ');
-    layout('data', function () use ($rows, $archived, $exportChecks, $auditRows, $activeGroups, $inactiveGroups) { ?>
+    layout('data', function () use ($rows, $archived, $auditRows, $activeGroups, $inactiveGroups) { ?>
 <section class="panel"><h2>Daten & Archiv</h2><p>Abgeschlossene Halbjahre archivieren und Datenbank-Backup sichern oder wiederherstellen.</p></section>
-<section class="panel"><h3>Export-Systemcheck</h3><?= table_rows(['Pruefung','Status','Details'], $exportChecks, fn($c) => [h($c['label']), '<span class="status-pill '.($c['ok']?'status-active':'status-archived').'">'.($c['ok']?'OK':'Fehlt').'</span>', h($c['detail'])], 'Keine Exportpruefungen vorhanden.') ?></section>
 <section class="panel"><h3>Archivmodus fuer Halbjahre</h3><p>Aktuell archiviert: <strong><?= count($archived) ?></strong></p><table><thead><tr><th>Halbjahr</th><th>Bewertungen</th><th>Lernbriefe</th><th>Status</th><th>Aktion</th></tr></thead><tbody><?php foreach ($rows as $row): $is=in_array($row['semester'], $archived, true); ?><tr><td><?= h($row['semester']) ?></td><td><?= h($row['rating_count']) ?></td><td><?= h($row['letter_count']) ?></td><td><span class="status-pill <?= $is?'status-archived':'status-active' ?>"><?= $is?'Archiviert':'Aktiv' ?></span></td><td><form method="post" action="<?= route('/data/archive-toggle') ?>"><input type="hidden" name="semester" value="<?= h($row['semester']) ?>"><input type="hidden" name="action" value="<?= $is?'unarchive':'archive' ?>"><button type="submit"><?= $is?'Reaktivieren':'Archivieren' ?></button></form></td></tr><?php endforeach; ?><?php if (!$rows): ?><tr><td colspan="5">Noch keine Halbjahresdaten vorhanden.</td></tr><?php endif; ?></tbody></table></section>
 <section class="panel"><h3>Lerngruppen deaktivieren</h3><p>Deaktivierte Lerngruppen verschwinden aus Dashboard, Suche und Uebersicht. Ihre Schueler, Bewertungen und Lernbriefe bleiben erhalten. Der urspruengliche Gruppenname kann danach neu verwendet werden.</p><h4>Aktive Lerngruppen</h4><table><thead><tr><th>Lerngruppe</th><th>Schueler</th><th>Aktion</th></tr></thead><tbody><?php foreach ($activeGroups as $group): ?><tr><td><?= h($group['name']) ?></td><td><?= h($group['student_count']) ?></td><td><form method="post" action="<?= route('/groups/deactivate') ?>"><input type="hidden" name="group_id" value="<?= h($group['id']) ?>"><button type="submit" onclick="return confirm('Diese Lerngruppe deaktivieren?')">Deaktivieren</button></form></td></tr><?php endforeach; ?><?php if (!$activeGroups): ?><tr><td colspan="3">Keine aktiven Lerngruppen vorhanden.</td></tr><?php endif; ?></tbody></table><h4>Deaktivierte Lerngruppen</h4><table><thead><tr><th>Frueherer Name</th><th>Interner Name</th><th>Schueler</th><th>Aktion</th></tr></thead><tbody><?php foreach ($inactiveGroups as $group): ?><tr><td><?= h($group['display_name']) ?></td><td><?= h($group['internal_name']) ?></td><td><?= h($group['student_count']) ?></td><td><form method="post" action="<?= route('/groups/reactivate') ?>"><input type="hidden" name="group_id" value="<?= h($group['id']) ?>"><button type="submit">Reaktivieren</button></form></td></tr><?php endforeach; ?><?php if (!$inactiveGroups): ?><tr><td colspan="4">Keine deaktivierten Lerngruppen vorhanden.</td></tr><?php endif; ?></tbody></table></section>
 <section class="panel data-actions-grid"><article class="data-action-card"><h3>Backup erstellen</h3><p>Datei: lernbrief_hub.db (ca. <?= file_exists(DB_PATH) ? (int)(filesize(DB_PATH)/1024) : 0 ?> KB)</p><a class="button-link" href="<?= route('/data/backup') ?>">Backup herunterladen</a></article><article class="data-action-card"><h3>Backup wiederherstellen</h3><p>Wiederherstellung ersetzt die aktuelle Datenbank. Vorher wird automatisch eine Sicherungskopie angelegt.</p><form method="post" action="<?= route('/data/restore') ?>" enctype="multipart/form-data" class="grid-form"><input type="file" name="backup_file" accept=".db,.sqlite,.sqlite3" required><button type="submit">Wiederherstellen</button></form></article></section>
 <section class="panel"><h3>Protokoll</h3><?= table_rows(['Zeit','Benutzer','Aktion','Objekt','Details'], $auditRows, fn($r) => [h($r['created_at']), h($r['actor'] ?: '-'), h($r['action']), h($r['entity_type'] . ($r['entity_id'] !== null ? ' #' . $r['entity_id'] : '')), h($r['details'] ?: '-')], 'Noch keine Protokolleintraege vorhanden.') ?></section><?php });
+}
+
+function page_system(): void
+{
+    $checks = export_system_checks();
+    $dbExists = file_exists(DB_PATH);
+    $runtime = [
+        ['label' => 'PHP Version', 'value' => PHP_VERSION],
+        ['label' => 'SAPI', 'value' => PHP_SAPI],
+        ['label' => 'memory_limit', 'value' => (string)ini_get('memory_limit')],
+        ['label' => 'max_execution_time', 'value' => (string)ini_get('max_execution_time') . 's'],
+        ['label' => 'upload_max_filesize', 'value' => (string)ini_get('upload_max_filesize')],
+        ['label' => 'post_max_size', 'value' => (string)ini_get('post_max_size')],
+        ['label' => 'Datenbank', 'value' => $dbExists ? (basename(DB_PATH) . ' (' . (int)(filesize(DB_PATH) / 1024) . ' KB)') : 'nicht gefunden'],
+    ];
+
+    $extensions = [
+        ['name' => 'sqlite3', 'ok' => extension_loaded('sqlite3')],
+        ['name' => 'mbstring', 'ok' => extension_loaded('mbstring')],
+        ['name' => 'dom', 'ok' => class_exists('DOMDocument')],
+        ['name' => 'zip', 'ok' => extension_loaded('zip') && class_exists('ZipArchive')],
+        ['name' => 'opcache', 'ok' => extension_loaded('Zend OPcache') || extension_loaded('opcache')],
+    ];
+
+    $opcacheStatus = function_exists('opcache_get_status') ? @opcache_get_status(false) : false;
+    $opcacheEnabled = is_array($opcacheStatus) && !empty($opcacheStatus['opcache_enabled']);
+
+    $opUsed = 0.0;
+    $opFree = 0.0;
+    $opWasted = 0.0;
+    $opHitRate = 0.0;
+    $opCachedScripts = 0;
+    $opMaxKeys = 0;
+    if ($opcacheEnabled) {
+        $mem = $opcacheStatus['memory_usage'] ?? [];
+        $stats = $opcacheStatus['opcache_statistics'] ?? [];
+        $opUsed = ((float)($mem['used_memory'] ?? 0)) / 1048576;
+        $opFree = ((float)($mem['free_memory'] ?? 0)) / 1048576;
+        $opWasted = ((float)($mem['wasted_memory'] ?? 0)) / 1048576;
+        $opHitRate = (float)($stats['opcache_hit_rate'] ?? 0);
+        $opCachedScripts = (int)($stats['num_cached_scripts'] ?? 0);
+        $opMaxKeys = (int)($stats['max_cached_keys'] ?? 0);
+    }
+
+    $opTotal = max(0.001, $opUsed + $opFree + $opWasted);
+    $opUsedPct = max(0, min(100, ($opUsed / $opTotal) * 100));
+    $opFreePct = max(0, min(100, ($opFree / $opTotal) * 100));
+    $opWastedPct = max(0, min(100, ($opWasted / $opTotal) * 100));
+
+    layout('system', function () use ($checks, $runtime, $extensions, $opcacheEnabled, $opUsed, $opFree, $opWasted, $opHitRate, $opCachedScripts, $opMaxKeys, $opUsedPct, $opFreePct, $opWastedPct) { ?>
+<section class="panel"><h2>System</h2><p>Systemvoraussetzungen, Laufzeitdaten und PHP OpCache-Status.</p></section>
+
+<section class="panel">
+    <h3>Systemvoraussetzungen</h3>
+    <div class="system-check-grid">
+        <?php foreach ($checks as $check): ?>
+            <article class="system-check-card <?= $check['ok'] ? 'ok' : 'warn' ?>">
+                <span class="system-check-icon"><?= $check['ok'] ? '✔' : '⚠' ?></span>
+                <div>
+                    <strong><?= h($check['label']) ?></strong>
+                    <p><?= h($check['detail']) ?></p>
+                </div>
+            </article>
+        <?php endforeach; ?>
+    </div>
+</section>
+
+<section class="panel">
+    <h3>PHP OpCache</h3>
+    <?php if (!$opcacheEnabled): ?>
+        <p><span class="status-pill status-archived">Nicht aktiv</span> OpCache ist in dieser Laufzeit nicht aktiv oder nicht verfuegbar.</p>
+    <?php else: ?>
+        <div class="system-kpis">
+            <div><span class="mini-kpi-label">Hit-Rate</span><strong><?= h(number_format($opHitRate, 2, '.', '')) ?>%</strong></div>
+            <div><span class="mini-kpi-label">Cached Scripts</span><strong><?= h($opCachedScripts) ?></strong></div>
+            <div><span class="mini-kpi-label">Max Keys</span><strong><?= h($opMaxKeys) ?></strong></div>
+            <div><span class="mini-kpi-label">Speicher gesamt</span><strong><?= h(number_format($opUsed + $opFree + $opWasted, 2, '.', '')) ?> MB</strong></div>
+        </div>
+        <div class="opcache-bars">
+            <div class="opcache-bar-row"><span>Used</span><div class="opcache-bar"><i style="width: <?= h(number_format($opUsedPct, 2, '.', '')) ?>%" class="bar-used"></i></div><strong><?= h(number_format($opUsed, 2, '.', '')) ?> MB</strong></div>
+            <div class="opcache-bar-row"><span>Free</span><div class="opcache-bar"><i style="width: <?= h(number_format($opFreePct, 2, '.', '')) ?>%" class="bar-free"></i></div><strong><?= h(number_format($opFree, 2, '.', '')) ?> MB</strong></div>
+            <div class="opcache-bar-row"><span>Wasted</span><div class="opcache-bar"><i style="width: <?= h(number_format($opWastedPct, 2, '.', '')) ?>%" class="bar-wasted"></i></div><strong><?= h(number_format($opWasted, 2, '.', '')) ?> MB</strong></div>
+        </div>
+    <?php endif; ?>
+</section>
+
+<section class="panel">
+    <h3>Runtime & Erweiterungen</h3>
+    <div class="system-two-col">
+        <table><thead><tr><th>Einstellung</th><th>Wert</th></tr></thead><tbody><?php foreach ($runtime as $row): ?><tr><td><?= h($row['label']) ?></td><td><?= h($row['value']) ?></td></tr><?php endforeach; ?></tbody></table>
+        <table><thead><tr><th>Extension</th><th>Status</th></tr></thead><tbody><?php foreach ($extensions as $ext): ?><tr><td><?= h($ext['name']) ?></td><td><span class="status-pill <?= $ext['ok'] ? 'status-active' : 'status-archived' ?>"><?= $ext['ok'] ? 'Aktiv' : 'Fehlt' ?></span></td></tr><?php endforeach; ?></tbody></table>
+    </div>
+</section><?php });
 }
 
 function handle_actions(string $r): void
@@ -1702,7 +1794,7 @@ function export_failure_response(string $type, string $message): never
     http_response_code(500);
     $checks = export_system_checks();
     header('Content-Type: text/html; charset=utf-8');
-    ?><!doctype html><html lang="de"><head><meta charset="utf-8"><title><?= h($type) ?>-Export fehlgeschlagen</title><link rel="stylesheet" href="static/style.css"></head><body><main class="container"><section class="panel"><h1><?= h($type) ?>-Export fehlgeschlagen</h1><p>Der Export konnte nicht abgeschlossen werden. Die technische Meldung wurde in <code>../tmp/export-debug.log</code> protokolliert.</p><p><strong>Fehler:</strong> <?= h($message) ?></p><p><a class="button-link" href="<?= route('/data') ?>">Systemcheck oeffnen</a> <a class="button-link" href="<?= route('/') ?>">Zum Dashboard</a></p></section><section class="panel"><h2>Export-Systemcheck</h2><?= table_rows(['Pruefung','Status','Details'], $checks, fn($c) => [h($c['label']), '<span class="status-pill '.($c['ok']?'status-active':'status-archived').'">'.($c['ok']?'OK':'Fehlt').'</span>', h($c['detail'])], 'Keine Exportpruefungen vorhanden.') ?></section></main></body></html><?php
+    ?><!doctype html><html lang="de"><head><meta charset="utf-8"><title><?= h($type) ?>-Export fehlgeschlagen</title><link rel="stylesheet" href="static/style.css"></head><body><main class="container"><section class="panel"><h1><?= h($type) ?>-Export fehlgeschlagen</h1><p>Der Export konnte nicht abgeschlossen werden. Die technische Meldung wurde in <code>../tmp/export-debug.log</code> protokolliert.</p><p><strong>Fehler:</strong> <?= h($message) ?></p><p><a class="button-link" href="<?= route('/system') ?>">Systemcheck oeffnen</a> <a class="button-link" href="<?= route('/') ?>">Zum Dashboard</a></p></section><section class="panel"><h2>Export-Systemcheck</h2><?= table_rows(['Pruefung','Status','Details'], $checks, fn($c) => [h($c['label']), '<span class="status-pill '.($c['ok']?'status-active':'status-archived').'">'.($c['ok']?'OK':'Fehlt').'</span>', h($c['detail'])], 'Keine Exportpruefungen vorhanden.') ?></section></main></body></html><?php
     exit;
 }
 
@@ -2057,5 +2149,6 @@ match ($r) {
     '/ratings' => page_ratings(),
     '/letters/show' => page_letter_show(),
     '/data' => page_data(),
+    '/system' => page_system(),
     default => page_index(),
 };
