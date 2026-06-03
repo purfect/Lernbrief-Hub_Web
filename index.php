@@ -1426,11 +1426,11 @@ function page_system(): void
     $dbExists = file_exists(DB_PATH);
     $runtime = [
         ['label' => 'PHP Version', 'value' => PHP_VERSION],
-        ['label' => 'SAPI', 'value' => PHP_SAPI],
+        ['label' => 'Laufzeit (SAPI)', 'value' => PHP_SAPI],
         ['label' => 'memory_limit', 'value' => (string)ini_get('memory_limit')],
-        ['label' => 'max_execution_time', 'value' => (string)ini_get('max_execution_time') . 's'],
-        ['label' => 'upload_max_filesize', 'value' => (string)ini_get('upload_max_filesize')],
-        ['label' => 'post_max_size', 'value' => (string)ini_get('post_max_size')],
+        ['label' => 'max. Ausfuehrungszeit', 'value' => (string)ini_get('max_execution_time') . 's'],
+        ['label' => 'max. Uploadgroesse', 'value' => (string)ini_get('upload_max_filesize')],
+        ['label' => 'max. POST-Groesse', 'value' => (string)ini_get('post_max_size')],
         ['label' => 'Datenbank', 'value' => $dbExists ? (basename(DB_PATH) . ' (' . (int)(filesize(DB_PATH) / 1024) . ' KB)') : 'nicht gefunden'],
     ];
 
@@ -1439,7 +1439,7 @@ function page_system(): void
         ['name' => 'mbstring', 'ok' => extension_loaded('mbstring')],
         ['name' => 'dom', 'ok' => class_exists('DOMDocument')],
         ['name' => 'zip', 'ok' => extension_loaded('zip') && class_exists('ZipArchive')],
-        ['name' => 'opcache', 'ok' => extension_loaded('Zend OPcache') || extension_loaded('opcache')],
+        ['name' => 'Zend OPcache', 'ok' => extension_loaded('Zend OPcache') || extension_loaded('opcache')],
     ];
 
     $opcacheStatus = function_exists('opcache_get_status') ? @opcache_get_status(false) : false;
@@ -1492,14 +1492,14 @@ function page_system(): void
     <?php else: ?>
         <div class="system-kpis">
             <div><span class="mini-kpi-label">Hit-Rate</span><strong><?= h(number_format($opHitRate, 2, '.', '')) ?>%</strong></div>
-            <div><span class="mini-kpi-label">Cached Scripts</span><strong><?= h($opCachedScripts) ?></strong></div>
-            <div><span class="mini-kpi-label">Max Keys</span><strong><?= h($opMaxKeys) ?></strong></div>
+            <div><span class="mini-kpi-label">Zwischengespeicherte Skripte</span><strong><?= h($opCachedScripts) ?></strong></div>
+            <div><span class="mini-kpi-label">Maximale Schluessel</span><strong><?= h($opMaxKeys) ?></strong></div>
             <div><span class="mini-kpi-label">Speicher gesamt</span><strong><?= h(number_format($opUsed + $opFree + $opWasted, 2, '.', '')) ?> MB</strong></div>
         </div>
         <div class="opcache-bars">
-            <div class="opcache-bar-row"><span>Used</span><div class="opcache-bar"><i style="width: <?= h(number_format($opUsedPct, 2, '.', '')) ?>%" class="bar-used"></i></div><strong><?= h(number_format($opUsed, 2, '.', '')) ?> MB</strong></div>
-            <div class="opcache-bar-row"><span>Free</span><div class="opcache-bar"><i style="width: <?= h(number_format($opFreePct, 2, '.', '')) ?>%" class="bar-free"></i></div><strong><?= h(number_format($opFree, 2, '.', '')) ?> MB</strong></div>
-            <div class="opcache-bar-row"><span>Wasted</span><div class="opcache-bar"><i style="width: <?= h(number_format($opWastedPct, 2, '.', '')) ?>%" class="bar-wasted"></i></div><strong><?= h(number_format($opWasted, 2, '.', '')) ?> MB</strong></div>
+            <div class="opcache-bar-row"><span>Belegt</span><div class="opcache-bar"><i style="width: <?= h(number_format($opUsedPct, 2, '.', '')) ?>%" class="bar-used"></i></div><strong><?= h(number_format($opUsed, 2, '.', '')) ?> MB</strong></div>
+            <div class="opcache-bar-row"><span>Frei</span><div class="opcache-bar"><i style="width: <?= h(number_format($opFreePct, 2, '.', '')) ?>%" class="bar-free"></i></div><strong><?= h(number_format($opFree, 2, '.', '')) ?> MB</strong></div>
+            <div class="opcache-bar-row"><span>Verschwendet</span><div class="opcache-bar"><i style="width: <?= h(number_format($opWastedPct, 2, '.', '')) ?>%" class="bar-wasted"></i></div><strong><?= h(number_format($opWasted, 2, '.', '')) ?> MB</strong></div>
         </div>
     <?php endif; ?>
 </section>
