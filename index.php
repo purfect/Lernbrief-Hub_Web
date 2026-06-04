@@ -47,7 +47,8 @@ CREATE TABLE IF NOT EXISTS competencies (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL UNIQUE,
     description TEXT DEFAULT '',
-    sort_order INTEGER NOT NULL DEFAULT 0
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    is_active INTEGER NOT NULL DEFAULT 1
 );
 CREATE TABLE IF NOT EXISTS ratings (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -153,6 +154,11 @@ SQL);
     }
     if (!in_array('is_active', $studentCols, true)) {
         $db->exec("ALTER TABLE students ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1");
+    }
+
+    $competencyCols = array_column($db->query('PRAGMA table_info(competencies)')->fetchAll(), 'name');
+    if (!in_array('is_active', $competencyCols, true)) {
+        $db->exec("ALTER TABLE competencies ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1");
     }
 
     foreach ($db->query("SELECT id, full_name, first_name, last_name FROM students WHERE TRIM(COALESCE(first_name, '')) = '' OR TRIM(COALESCE(last_name, '')) = ''")->fetchAll() as $row) {
@@ -424,9 +430,12 @@ function query_groups(): array
     ');
 }
 
-function query_competencies(): array
+function query_competencies(bool $includeInactive = false): array
 {
-    return all('SELECT * FROM competencies ORDER BY sort_order ASC, name ASC');
+    if ($includeInactive) {
+        return all('SELECT * FROM competencies ORDER BY COALESCE(is_active, 1) DESC, sort_order ASC, name ASC');
+    }
+    return all('SELECT * FROM competencies WHERE COALESCE(is_active, 1) = 1 ORDER BY sort_order ASC, name ASC');
 }
 
 function get_setting(string $key, string $default = ''): string
@@ -1341,17 +1350,22 @@ function page_group_show(): void
 
 function page_competencies(): void
 {
-    $rows = query_competencies();
-    layout('competencies', function () use ($rows) { ?>
-<section class="panel"><h2>Kompetenzen verwalten</h2><form method="post" action="<?= route('/competencies/save') ?>" class="grid-form"><input type="hidden" name="action" value="create"><input type="text" name="name" placeholder="Kompetenzname" required><input type="text" name="description" placeholder="Beschreibung"><input type="number" name="sort_order" placeholder="Sortierung" value="0"><button type="submit">Kompetenz anlegen</button></form></section>
-<section class="panel"><table><thead><tr><th>Reihenfolge</th><th>Name</th><th>Beschreibung</th><th>Aktion</th></tr></thead><tbody>
-<?php foreach ($rows as $c): ?><tr><form method="post" action="<?= route('/competencies/save') ?>"><td><input type="number" name="sort_order" value="<?= h($c['sort_order']) ?>" required></td><td><input type="text" name="name" value="<?= h($c['name']) ?>" required></td><td><input type="text" name="description" value="<?= h($c['description']) ?>"></td><td><input type="hidden" name="action" value="update"><input type="hidden" name="competency_id" value="<?= h($c['id']) ?>"><button type="submit">Speichern</button></td></form></tr><?php endforeach; ?>
-<?php if (!$rows): ?><tr><td colspan="4">Keine Kompetenzen angelegt.</td></tr><?php endif; ?></tbody></table></section><?php });
+    $rows = query_competencies(true);
+    $activeRows = array_values(array_filter($rows, fn($c) => (int)($c['is_active'] ?? 1) === 1));
+    $inactiveRows = array_values(array_filter($rows, fn($c) => (int)($c['is_active'] ?? 1) === 0));
+    layout('competencies', function () use ($activeRows, $inactiveRows) { ?>
+<section class="panel"><h2>Kompetenzen verwalten</h2><p>Hinweis: <strong>Deaktivieren</strong> blendet eine Kompetenz aus, bestehende Bewertungen bleiben erhalten. <strong>Loeschen</strong> ist nur moeglich, wenn keine Bewertungen zur Kompetenz vorhanden sind.</p><form method="post" action="<?= route('/competencies/save') ?>" class="grid-form"><input type="hidden" name="action" value="create"><input type="text" name="name" placeholder="Kompetenzname" required><input type="text" name="description" placeholder="Beschreibung"><input type="number" name="sort_order" placeholder="Sortierung" value="0"><button type="submit">Kompetenz anlegen</button></form></section>
+<section class="panel"><h3>Aktive Kompetenzen</h3><table><thead><tr><th>Reihenfolge</th><th>Name</th><th>Beschreibung</th><th>Aktionen</th></tr></thead><tbody>
+<?php foreach ($activeRows as $c): ?><tr><form method="post" action="<?= route('/competencies/save') ?>"><td><input type="number" name="sort_order" value="<?= h($c['sort_order']) ?>" required></td><td><input type="text" name="name" value="<?= h($c['name']) ?>" required></td><td><input type="text" name="description" value="<?= h($c['description']) ?>"></td><td><input type="hidden" name="competency_id" value="<?= h($c['id']) ?>"><button type="submit" name="action" value="update">Speichern</button><button type="submit" name="action" value="deactivate" onclick="return confirm('Kompetenz deaktivieren?')">Deaktivieren</button><button type="submit" name="action" value="delete" onclick="return confirm('Kompetenz wirklich loeschen?')">Loeschen</button></td></form></tr><?php endforeach; ?>
+<?php if (!$activeRows): ?><tr><td colspan="4">Keine aktiven Kompetenzen vorhanden.</td></tr><?php endif; ?></tbody></table></section>
+<section class="panel"><h3>Deaktivierte Kompetenzen</h3><table><thead><tr><th>Reihenfolge</th><th>Name</th><th>Beschreibung</th><th>Aktionen</th></tr></thead><tbody>
+<?php foreach ($inactiveRows as $c): ?><tr><form method="post" action="<?= route('/competencies/save') ?>"><td><?= h($c['sort_order']) ?></td><td><?= h($c['name']) ?></td><td><?= h($c['description']) ?></td><td><input type="hidden" name="competency_id" value="<?= h($c['id']) ?>"><button type="submit" name="action" value="reactivate">Reaktivieren</button><button type="submit" name="action" value="delete" onclick="return confirm('Kompetenz wirklich loeschen?')">Loeschen</button></td></form></tr><?php endforeach; ?>
+<?php if (!$inactiveRows): ?><tr><td colspan="4">Keine deaktivierten Kompetenzen vorhanden.</td></tr><?php endif; ?></tbody></table></section><?php });
 }
 
 function page_templates(): void
 {
-    $rows = all('SELECT st.id, st.grade, st.sentence, c.name AS competency_name, c.id AS competency_id FROM sentence_templates st JOIN competencies c ON c.id = st.competency_id WHERE st.grade BETWEEN 1 AND 5 ORDER BY c.sort_order ASC, c.name ASC, st.grade ASC');
+    $rows = all('SELECT st.id, st.grade, st.sentence, c.name AS competency_name, c.id AS competency_id FROM sentence_templates st JOIN competencies c ON c.id = st.competency_id WHERE st.grade BETWEEN 1 AND 5 AND COALESCE(c.is_active, 1) = 1 ORDER BY c.sort_order ASC, c.name ASC, st.grade ASC');
     $competencies = query_competencies();
     layout('templates', function () use ($rows, $competencies) { ?>
 <section class="panel"><h2>Satzbausteine nach Note</h2><p>Hinweis: Mit <strong>{name}</strong> (Vorname), <strong>{first_name}</strong>, <strong>{last_name}</strong> und <strong>{full_name}</strong> kann der Schuelername im Satz verwendet werden.</p><a class="button-link" href="<?= route('/letter-templates') ?>">Zu den Lernbriefvorlagen</a></section>
@@ -1839,9 +1853,42 @@ function handle_actions(string $r): void
     if ($r === '/competencies/save') {
         $action = post('action', 'create'); $name = post('name'); $desc = post('description'); $sort = (int)post('sort_order', '0');
         try {
-            if ($action === 'update') { $cid = (int)post('competency_id'); $db->prepare('UPDATE competencies SET name = ?, description = ?, sort_order = ? WHERE id = ?')->execute([$name,$desc,$sort,$cid]); audit_log('update', 'competency', $cid, ['name'=>$name]); }
-            else { $db->prepare('INSERT INTO competencies (name, description, sort_order) VALUES (?, ?, ?)')->execute([$name,$desc,$sort]); $cid=(int)$db->lastInsertId(); foreach (GRADE_OPTIONS as $g) $db->prepare('INSERT INTO sentence_templates (competency_id, grade, semester, sentence) VALUES (?, ?, ?, ?)')->execute([$cid,$g,'*',"In {$name} erreicht {name} aktuell die Note {$g}."]); audit_log('create', 'competency', $cid, ['name'=>$name]); }
-            flash($action === 'update' ? 'Kompetenz aktualisiert.' : 'Kompetenz erstellt.');
+            if ($action === 'update') {
+                $cid = (int)post('competency_id');
+                $db->prepare('UPDATE competencies SET name = ?, description = ?, sort_order = ? WHERE id = ?')->execute([$name,$desc,$sort,$cid]);
+                audit_log('update', 'competency', $cid, ['name'=>$name]);
+                flash('Kompetenz aktualisiert.');
+            } elseif ($action === 'deactivate') {
+                $cid = (int)post('competency_id');
+                $db->prepare('UPDATE competencies SET is_active = 0 WHERE id = ?')->execute([$cid]);
+                audit_log('deactivate', 'competency', $cid);
+                flash('Kompetenz deaktiviert.');
+            } elseif ($action === 'reactivate') {
+                $cid = (int)post('competency_id');
+                $db->prepare('UPDATE competencies SET is_active = 1 WHERE id = ?')->execute([$cid]);
+                audit_log('reactivate', 'competency', $cid);
+                flash('Kompetenz reaktiviert.');
+            } elseif ($action === 'delete') {
+                $cid = (int)post('competency_id');
+                $stmt = $db->prepare('SELECT COUNT(*) FROM ratings WHERE competency_id = ?');
+                $stmt->execute([$cid]);
+                $ratingCount = (int)$stmt->fetchColumn();
+                if ($ratingCount > 0) {
+                    flash('Kompetenz kann nicht geloescht werden, da bereits Bewertungen existieren. Bitte deaktivieren.', 'error');
+                } else {
+                    $db->prepare('DELETE FROM competencies WHERE id = ?')->execute([$cid]);
+                    audit_log('delete', 'competency', $cid);
+                    flash('Kompetenz geloescht.');
+                }
+            } else {
+                $db->prepare('INSERT INTO competencies (name, description, sort_order, is_active) VALUES (?, ?, ?, 1)')->execute([$name,$desc,$sort]);
+                $cid=(int)$db->lastInsertId();
+                foreach (GRADE_OPTIONS as $g) {
+                    $db->prepare('INSERT INTO sentence_templates (competency_id, grade, semester, sentence) VALUES (?, ?, ?, ?)')->execute([$cid,$g,'*',"In {$name} erreicht {name} aktuell die Note {$g}."]);
+                }
+                audit_log('create', 'competency', $cid, ['name'=>$name]);
+                flash('Kompetenz erstellt.');
+            }
         } catch (Throwable) { flash('Diese Kompetenz existiert bereits oder ist ungueltig.', 'error'); }
         redirect_to('/competencies');
     }
