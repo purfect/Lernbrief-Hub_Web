@@ -579,7 +579,21 @@ function rich_html_inner_html(DOMNode $node): string
 {
     $out = '';
     foreach ($node->childNodes as $child) {
-        $out .= $node->ownerDocument?->saveHTML($child) ?: '';
+        if ($child instanceof DOMText) {
+            $out .= htmlspecialchars($child->nodeValue, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+            continue;
+        }
+        if ($child instanceof DOMElement) {
+            $tag = strtolower($child->tagName);
+            $attrs = '';
+            foreach ($child->attributes as $attr) {
+                $attrs .= ' ' . htmlspecialchars($attr->name, ENT_QUOTES, 'UTF-8') . '="' . htmlspecialchars($attr->value, ENT_QUOTES, 'UTF-8') . '"';
+            }
+            $out .= '<' . $tag . $attrs . '>';
+            $out .= rich_html_inner_html($child);
+            $out .= '</' . $tag . '>';
+            continue;
+        }
     }
     return $out;
 }
@@ -683,11 +697,17 @@ function sanitize_rich_html(string $html): string
 
     $body = $dom->getElementsByTagName('body')->item(0);
     if (!$body) {
-        return '';
+        return $html;
     }
 
     sanitize_rich_dom_node($body);
-    return trim(rich_html_inner_html($body));
+    $result = trim(rich_html_inner_html($body));
+    
+    if ($result === '') {
+        return $html;
+    }
+    
+    return $result;
 }
 
 function blockify_inline_html(string $html): string
@@ -1861,7 +1881,7 @@ function handle_actions(string $r): void
         redirect_to('/ratings', ['student_id'=>$sid,'semester'=>$sem]);
     }
     if ($r === '/letters/update') {
-        $id = (int)($_GET['id'] ?? 0); $content = post('content_html');
+        $id = (int)($_GET['id'] ?? 0); $content = sanitize_rich_html(post('content_html'));
         if ($content === '') flash('Lernbriefinhalt darf nicht leer sein.', 'error'); else { $db->prepare('UPDATE letters SET content = ? WHERE id = ?')->execute([$content,$id]); audit_log('update', 'letter', $id); flash('Lernbrief wurde gespeichert.'); }
         redirect_to('/letters/show', ['id'=>$id]);
     }
@@ -1897,8 +1917,10 @@ function save_letter_template_action(): void
         flash('Vorlage geloescht.'); redirect_to('/letter-templates');
     }
     $name = post('name');
-    $header = sanitize_rich_html(post('header_html')) ?: 'Lernbrief fuer {name}<br>Lerngruppe: {group_name}<br>Halbjahr: {semester}';
-    $footer = sanitize_rich_html(post('footer_html'));
+    $headerInput = post('header_html');
+    $header = $headerInput ? (sanitize_rich_html($headerInput) ?: 'Lernbrief fuer {name}<br>Lerngruppe: {group_name}<br>Halbjahr: {semester}') : 'Lernbrief fuer {name}<br>Lerngruppe: {group_name}<br>Halbjahr: {semester}';
+    $footerInput = post('footer_html');
+    $footer = $footerInput ? sanitize_rich_html($footerInput) : '';
     if ($id <= 0 || !one('SELECT id FROM letter_templates WHERE id = ?', [$id])) {
         flash('Bitte eine gueltige Vorlage auswaehlen.', 'error');
         redirect_to('/letter-templates');
