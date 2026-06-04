@@ -2178,15 +2178,17 @@ function build_odt_document(string $html): string
     $paragraphs = odt_paragraphs_with_styles_from_html($html);
     $paragraphXml = '';
     foreach ($paragraphs as $p) {
-        $text = isset($p['text']) ? $p['text'] : '';
+        $innerHtml = isset($p['html']) ? $p['html'] : '';
         $align = isset($p['align']) ? $p['align'] : 'left';
         $styleName = 'P-' . ucfirst($align);
         
-        if ($text === '' || $text === '&nbsp;') {
-            $paragraphXml .= '<text:p text:style-name="' . odt_escape_xml($styleName) . '"><text:s/></text:p>';
+        if ($innerHtml === '' || $innerHtml === '&nbsp;') {
+            $paragraphXml .= '<text:p text:style-name="' . $styleName . '"><text:s/></text:p>';
             continue;
         }
-        $paragraphXml .= '<text:p text:style-name="' . odt_escape_xml($styleName) . '">' . odt_escape_xml($text) . '</text:p>';
+        
+        $contentXmlContent = odt_dom_node_to_xml($innerHtml);
+        $paragraphXml .= '<text:p text:style-name="' . $styleName . '">' . $contentXmlContent . '</text:p>';
     }
 
     $contentXml = '<?xml version="1.0" encoding="UTF-8"?>'
@@ -2196,6 +2198,9 @@ function build_odt_document(string $html): string
         . '<style:style style:name="P-Center" style:family="paragraph"><style:paragraph-properties fo:margin-top="0cm" fo:margin-bottom="0cm" fo:line-height="135%" fo:text-align="center"/></style:style>'
         . '<style:style style:name="P-Right" style:family="paragraph"><style:paragraph-properties fo:margin-top="0cm" fo:margin-bottom="0cm" fo:line-height="135%" fo:text-align="right"/></style:style>'
         . '<style:style style:name="P-Justify" style:family="paragraph"><style:paragraph-properties fo:margin-top="0cm" fo:margin-bottom="0cm" fo:line-height="135%" fo:text-align="justify"/></style:style>'
+        . '<style:style style:name="Bold" style:family="text"><style:text-properties fo:font-weight="bold"/></style:style>'
+        . '<style:style style:name="Italic" style:family="text"><style:text-properties fo:font-style="italic"/></style:style>'
+        . '<style:style style:name="Underline" style:family="text"><style:text-properties style:text-underline-style="solid" style:text-underline-width="auto" style:text-underline-color="font-color"/></style:style>'
         . '</office:automatic-styles>'
         . '<office:body><office:text>' . $paragraphXml . '</office:text></office:body>'
         . '</office:document-content>';
@@ -2267,44 +2272,32 @@ function odt_paragraphs_with_styles_from_html(string $html): array
     $out = [];
     
     if ($body) {
-        // Rekursiv alle Block-Elemente finden
         $walker = function (DOMNode $node) use (&$walker, &$out, &$dom) {
             if ($node instanceof DOMElement) {
                 $tagName = strtolower($node->tagName);
                 if (in_array($tagName, ['p', 'div', 'h2', 'h3', 'h4', 'blockquote', 'li'], true)) {
-                    // text-align Style extrahieren
                     $align = 'left';
                     $style = $node->getAttribute('style');
                     if ($style !== '' && preg_match('/text-align\s*:\s*(left|center|right|justify)/i', $style, $m)) {
                         $align = strtolower($m[1]);
                     }
                     
-                    // HTML aus diesem Element als String bekommen (mit <br> erhalten)
                     $innerHtml = '';
                     foreach ($node->childNodes as $child) {
                         $innerHtml .= $dom->saveHTML($child);
                     }
                     
-                    // <br> → Newline umwandeln
                     $innerHtml = preg_replace('/<br\s*\/?\s*>/i', "\n", $innerHtml) ?? $innerHtml;
-                    // Tags entfernen
-                    $text = html_entity_decode(strip_tags($innerHtml), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
-                    // Newlines normalisieren
-                    $text = str_replace(["\r\n", "\r"], "\n", $text);
-                    $text = preg_replace('/[ \t]+\n/', "\n", $text) ?? $text;
-                    $text = preg_replace('/\n{3,}/', "\n\n", $text) ?? $text;
                     
-                    // Nach Newlines splitten und jeden als Paragraph hinzufügen
-                    $lines = explode("\n", $text);
+                    $lines = preg_split('/\n+/', $innerHtml);
                     foreach ($lines as $line) {
                         $trimmed = trim($line);
                         if ($trimmed === '') {
                             $trimmed = '&nbsp;';
                         }
-                        $out[] = ['text' => $trimmed, 'align' => $align];
+                        $out[] = ['html' => $trimmed, 'align' => $align];
                     }
                 } else {
-                    // Nicht-Block-Elemente: Kinder durchsuchen
                     foreach ($node->childNodes as $child) {
                         $walker($child);
                     }
@@ -2316,7 +2309,7 @@ function odt_paragraphs_with_styles_from_html(string $html): array
     }
     
     if (!$out) {
-        return [['text' => '', 'align' => 'left']];
+        return [['html' => '', 'align' => 'left']];
     }
     return $out;
 }
@@ -2336,12 +2329,91 @@ function odt_paragraphs_from_html(string $html): array
     $out = [];
     foreach ($lines as $line) {
         $trimmed = trim($line);
-        $out[] = ['text' => $trimmed, 'align' => 'left'];
+        $out[] = ['html' => $trimmed, 'align' => 'left'];
     }
     if (!$out) {
-        return [['text' => '', 'align' => 'left']];
+        return [['html' => '', 'align' => 'left']];
     }
     return $out;
+}
+
+function odt_dom_node_to_xml(string $html): string
+{
+    if (!class_exists('DOMDocument')) {
+        return odt_escape_xml(strip_tags($html));
+    }
+    
+    $dom = new DOMDocument('1.0', 'UTF-8');
+    libxml_use_internal_errors(true);
+    $dom->loadHTML('<?xml encoding="UTF-8"><body>' . $html . '</body>', LIBXML_HTML_NOIMPLIED | LIBXML_HTML_NODEFDTD);
+    libxml_clear_errors();
+    
+    $body = $dom->getElementsByTagName('body')->item(0);
+    if (!$body) {
+        return odt_escape_xml(strip_tags($html));
+    }
+    
+    $xml = '';
+    foreach ($body->childNodes as $node) {
+        $xml .= odt_convert_node($node);
+    }
+    return $xml;
+}
+
+function odt_convert_node(DOMNode $node): string
+{
+    if ($node instanceof DOMText) {
+        $text = $node->nodeValue;
+        if (trim($text) === '') {
+            return '';
+        }
+        return odt_escape_xml($text);
+    }
+    
+    if ($node instanceof DOMElement) {
+        $tagName = strtolower($node->tagName);
+        $xml = '';
+        
+        switch ($tagName) {
+            case 'strong':
+            case 'b':
+                foreach ($node->childNodes as $child) {
+                    $xml .= odt_convert_node($child);
+                }
+                return '<text:span text:style-name="Bold">' . $xml . '</text:span>';
+            
+            case 'em':
+            case 'i':
+                foreach ($node->childNodes as $child) {
+                    $xml .= odt_convert_node($child);
+                }
+                return '<text:span text:style-name="Italic">' . $xml . '</text:span>';
+            
+            case 'u':
+            case 'ins':
+                foreach ($node->childNodes as $child) {
+                    $xml .= odt_convert_node($child);
+                }
+                return '<text:span text:style-name="Underline">' . $xml . '</text:span>';
+            
+            case 'br':
+                return '';
+            
+            case 'span':
+                foreach ($node->childNodes as $child) {
+                    $xml .= odt_convert_node($child);
+                }
+                return $xml;
+            
+            default:
+                foreach ($node->childNodes as $child) {
+                    $xml .= odt_convert_node($child);
+                }
+                return $xml;
+        }
+    }
+    
+    return '';
 }
 
 function odt_escape_xml(string $text): string
