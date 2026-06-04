@@ -524,6 +524,172 @@ function normalize_inline_html(string $html): string
     return $html ?? '';
 }
 
+function sanitize_rich_href(string $href): ?string
+{
+    $href = trim(html_entity_decode($href, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'));
+    if ($href === '') {
+        return null;
+    }
+    if (preg_match('/^(#|\/|\.\/|\.\.\/)/', $href)) {
+        return $href;
+    }
+    $scheme = strtolower((string)parse_url($href, PHP_URL_SCHEME));
+    if ($scheme === '' || in_array($scheme, ['http', 'https', 'mailto', 'tel'], true)) {
+        return $href;
+    }
+    return null;
+}
+
+function sanitize_rich_style(string $style): string
+{
+    $allowed = [];
+    foreach (html_style_map($style) as $key => $value) {
+        if ($key === 'text-align' && in_array(strtolower($value), ['left', 'center', 'right', 'justify'], true)) {
+            $allowed[$key] = strtolower($value);
+            continue;
+        }
+        if ($key === 'font-weight' && preg_match('/^(normal|bold|[1-9]00)$/i', $value)) {
+            $allowed[$key] = strtolower($value);
+            continue;
+        }
+        if ($key === 'font-style' && preg_match('/^(normal|italic)$/i', $value)) {
+            $allowed[$key] = strtolower($value);
+            continue;
+        }
+        if ($key === 'text-decoration' && preg_match('/^(none|underline)$/i', $value)) {
+            $allowed[$key] = strtolower($value);
+            continue;
+        }
+        if ($key === 'font-family' && preg_match('/^[a-zA-Z0-9\s,"\'-]+$/', $value)) {
+            $allowed[$key] = $value;
+            continue;
+        }
+        if ($key === 'font-size' && preg_match('/^[0-9]+(\.[0-9]+)?(px|pt|em|rem|%)$/i', $value)) {
+            $allowed[$key] = strtolower($value);
+        }
+    }
+    $parts = [];
+    foreach ($allowed as $key => $value) {
+        $parts[] = $key . ':' . $value;
+    }
+    return implode(';', $parts);
+}
+
+function rich_html_inner_html(DOMNode $node): string
+{
+    $out = '';
+    foreach ($node->childNodes as $child) {
+        $out .= $node->ownerDocument?->saveHTML($child) ?: '';
+    }
+    return $out;
+}
+
+function sanitize_rich_dom_node(DOMNode $node): void
+{
+    $allowedTags = [
+        'p', 'div', 'br', 'strong', 'b', 'em', 'i', 'u',
+        'ul', 'ol', 'li', 'h2', 'h3', 'h4', 'blockquote', 'a', 'span',
+    ];
+    $classWhitelist = ['intro-gap', 'sentence-break', 'letter-header', 'letter-footer', 'export-meta', 'lb-gap', 'lb-paragraph'];
+
+    if ($node instanceof DOMElement) {
+        $tag = strtolower($node->tagName);
+        if (!in_array($tag, $allowedTags, true)) {
+            $parent = $node->parentNode;
+            if ($parent) {
+                while ($node->firstChild) {
+                    $parent->insertBefore($node->firstChild, $node);
+                }
+                $parent->removeChild($node);
+            }
+            return;
+        }
+
+        $toRemove = [];
+        foreach ($node->attributes as $attr) {
+            $name = strtolower($attr->name);
+            $value = (string)$attr->value;
+
+            if (str_starts_with($name, 'on')) {
+                $toRemove[] = $attr->name;
+                continue;
+            }
+
+            if ($name === 'href' && $tag === 'a') {
+                $cleanHref = sanitize_rich_href($value);
+                if ($cleanHref === null) {
+                    $toRemove[] = $attr->name;
+                } else {
+                    $node->setAttribute('href', $cleanHref);
+                    $node->setAttribute('rel', 'noopener noreferrer');
+                }
+                continue;
+            }
+
+            if ($name === 'style') {
+                $cleanStyle = sanitize_rich_style($value);
+                if ($cleanStyle === '') {
+                    $toRemove[] = $attr->name;
+                } else {
+                    $node->setAttribute('style', $cleanStyle);
+                }
+                continue;
+            }
+
+            if ($name === 'class' && in_array($tag, ['div', 'span'], true)) {
+                $classes = preg_split('/\s+/', trim($value)) ?: [];
+                $classes = array_values(array_intersect($classes, $classWhitelist));
+                if ($classes) {
+                    $node->setAttribute('class', implode(' ', $classes));
+                } else {
+                    $toRemove[] = $attr->name;
+                }
+                continue;
+            }
+
+            $toRemove[] = $attr->name;
+        }
+
+        foreach ($toRemove as $attrName) {
+            $node->removeAttribute($attrName);
+        }
+    }
+
+    $children = [];
+    foreach ($node->childNodes as $child) {
+        $children[] = $child;
+    }
+    foreach ($children as $child) {
+        sanitize_rich_dom_node($child);
+    }
+}
+
+function sanitize_rich_html(string $html): string
+{
+    $html = normalize_inline_html($html);
+    if ($html === '') {
+        return '';
+    }
+
+    if (!class_exists('DOMDocument')) {
+        $fallback = strip_tags($html, '<p><div><br><strong><b><em><i><u><ul><ol><li><h2><h3><h4><blockquote><a><span>');
+        return preg_replace('/href\s*=\s*(["\'])\s*javascript:[^\1]*\1/i', '', $fallback) ?? $fallback;
+    }
+
+    $dom = new DOMDocument('1.0', 'UTF-8');
+    libxml_use_internal_errors(true);
+    $dom->loadHTML('<?xml encoding="UTF-8"><body>' . $html . '</body>', LIBXML_HTML_NOIMPLIED | LIBXML_HTML_NODEFDTD);
+    libxml_clear_errors();
+
+    $body = $dom->getElementsByTagName('body')->item(0);
+    if (!$body) {
+        return '';
+    }
+
+    sanitize_rich_dom_node($body);
+    return trim(rich_html_inner_html($body));
+}
+
 function blockify_inline_html(string $html): string
 {
     $html = normalize_inline_html($html);
@@ -1730,7 +1896,9 @@ function save_letter_template_action(): void
         audit_log('delete', 'letter_template', $id);
         flash('Vorlage geloescht.'); redirect_to('/letter-templates');
     }
-    $name = post('name'); $header = post('header_html') ?: 'Lernbrief fuer {name}<br>Lerngruppe: {group_name}<br>Halbjahr: {semester}';
+    $name = post('name');
+    $header = sanitize_rich_html(post('header_html')) ?: 'Lernbrief fuer {name}<br>Lerngruppe: {group_name}<br>Halbjahr: {semester}';
+    $footer = sanitize_rich_html(post('footer_html'));
     if ($id <= 0 || !one('SELECT id FROM letter_templates WHERE id = ?', [$id])) {
         flash('Bitte eine gueltige Vorlage auswaehlen.', 'error');
         redirect_to('/letter-templates');
@@ -1747,7 +1915,7 @@ function save_letter_template_action(): void
     $exportSignature = post('export_signature_template') ?: 'Datum: {date}<br><br>Unterschrift: ______________________________';
     try {
         $db->prepare('UPDATE letter_templates SET name=?, header_html=?, footer_html=?, include_average_sentence=?, average_sentence_template=?, header_position=?, footer_position=?, body_font_family=?, body_font_size=?, include_export_signature=?, export_signature_template=? WHERE id=?')
-            ->execute([$name, $header, post('footer_html'), isset($_POST['include_average_sentence']) ? 1 : 0, $avg, in_array(post('header_position'), ['top','after_intro'], true) ? post('header_position') : 'top', in_array(post('footer_position'), ['bottom','after_header'], true) ? post('footer_position') : 'bottom', post('body_font_family', 'Georgia'), max(4, min(28, (int)post('body_font_size', '16'))), isset($_POST['include_export_signature']) ? 1 : 0, $exportSignature, $id]);
+            ->execute([$name, $header, $footer, isset($_POST['include_average_sentence']) ? 1 : 0, $avg, in_array(post('header_position'), ['top','after_intro'], true) ? post('header_position') : 'top', in_array(post('footer_position'), ['bottom','after_header'], true) ? post('footer_position') : 'bottom', post('body_font_family', 'Georgia'), max(4, min(28, (int)post('body_font_size', '16'))), isset($_POST['include_export_signature']) ? 1 : 0, $exportSignature, $id]);
         audit_log('update', 'letter_template', $id, ['name'=>$name]);
         flash('Lernbriefvorlage gespeichert.');
     } catch (PDOException $e) { flash($e->getCode() === '23000' ? 'Eine Vorlage mit diesem Namen existiert bereits.' : 'Vorlage konnte nicht gespeichert werden: ' . $e->getMessage(), 'error'); }
@@ -1835,7 +2003,7 @@ function export_pdf_builtin(array $letter): never
         "8 0 obj << /Length " . strlen($stream) . " >> stream\n{$stream}\nendstream endobj",
     ];
     $pdf = "%PDF-1.4\n"; $offsets = [0];
-    foreach ($objects as $obj) { $offsets[] = strlen($pdf); $pdf .= $obj . "\n"; }
+        $id = (int)($_GET['id'] ?? 0); $content = sanitize_rich_html(post('content_html'));
     $xref = strlen($pdf); $pdf .= "xref\n0 9\n0000000000 65535 f \n";
     for ($i=1; $i<=8; $i++) $pdf .= sprintf("%010d 00000 n \n", $offsets[$i]);
     $pdf .= "trailer << /Size 9 /Root 1 0 R >>\nstartxref\n{$xref}\n%%EOF";
