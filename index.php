@@ -2175,20 +2175,27 @@ function normalize_export_html(string $html): string
 
 function build_odt_document(string $html): string
 {
-    $paragraphs = odt_paragraphs_from_html($html);
+    $paragraphs = odt_paragraphs_with_styles_from_html($html);
     $paragraphXml = '';
-    foreach ($paragraphs as $line) {
-        if ($line === '') {
-            $paragraphXml .= '<text:p text:style-name="P1"><text:s/></text:p>';
+    foreach ($paragraphs as $p) {
+        $text = isset($p['text']) ? $p['text'] : '';
+        $align = isset($p['align']) ? $p['align'] : 'left';
+        $styleName = 'P-' . ucfirst($align);
+        
+        if ($text === '' || $text === '&nbsp;') {
+            $paragraphXml .= '<text:p text:style-name="' . odt_escape_xml($styleName) . '"><text:s/></text:p>';
             continue;
         }
-        $paragraphXml .= '<text:p text:style-name="P1">' . odt_escape_xml($line) . '</text:p>';
+        $paragraphXml .= '<text:p text:style-name="' . odt_escape_xml($styleName) . '">' . odt_escape_xml($text) . '</text:p>';
     }
 
     $contentXml = '<?xml version="1.0" encoding="UTF-8"?>'
         . '<office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0" xmlns:style="urn:oasis:names:tc:opendocument:xmlns:style:1.0" xmlns:fo="urn:oasis:names:tc:opendocument:xmlns:xsl-fo-compatible:1.0" office:version="1.2">'
         . '<office:automatic-styles>'
-        . '<style:style style:name="P1" style:family="paragraph"><style:paragraph-properties fo:margin-top="0cm" fo:margin-bottom="0cm" fo:line-height="135%"/></style:style>'
+        . '<style:style style:name="P-Left" style:family="paragraph"><style:paragraph-properties fo:margin-top="0cm" fo:margin-bottom="0cm" fo:line-height="135%" fo:text-align="left"/></style:style>'
+        . '<style:style style:name="P-Center" style:family="paragraph"><style:paragraph-properties fo:margin-top="0cm" fo:margin-bottom="0cm" fo:line-height="135%" fo:text-align="center"/></style:style>'
+        . '<style:style style:name="P-Right" style:family="paragraph"><style:paragraph-properties fo:margin-top="0cm" fo:margin-bottom="0cm" fo:line-height="135%" fo:text-align="right"/></style:style>'
+        . '<style:style style:name="P-Justify" style:family="paragraph"><style:paragraph-properties fo:margin-top="0cm" fo:margin-bottom="0cm" fo:line-height="135%" fo:text-align="justify"/></style:style>'
         . '</office:automatic-styles>'
         . '<office:body><office:text>' . $paragraphXml . '</office:text></office:body>'
         . '</office:document-content>';
@@ -2242,6 +2249,56 @@ function build_odt_document(string $html): string
     return $bytes;
 }
 
+function odt_paragraphs_with_styles_from_html(string $html): array
+{
+    $html = preg_replace('/<div\s+class=["\']intro-gap["\']\s*>\s*<\/div>/i', '<p>&nbsp;</p>', $html) ?? $html;
+    $html = preg_replace('/<div\s+class=["\']sentence-break["\']\s*>\s*(?:<br\s*\/?\s*>)?\s*<\/div>/i', '<p>&nbsp;</p>', $html) ?? $html;
+    
+    if (!class_exists('DOMDocument')) {
+        return odt_paragraphs_from_html($html);
+    }
+    
+    $dom = new DOMDocument('1.0', 'UTF-8');
+    libxml_use_internal_errors(true);
+    $dom->loadHTML('<?xml encoding="UTF-8"><body>' . $html . '</body>', LIBXML_HTML_NOIMPLIED | LIBXML_HTML_NODEFDTD);
+    libxml_clear_errors();
+    
+    $body = $dom->getElementsByTagName('body')->item(0);
+    $out = [];
+    
+    if ($body) {
+        foreach ($body->childNodes as $node) {
+            if ($node instanceof DOMElement) {
+                $tagName = strtolower($node->tagName);
+                if (in_array($tagName, ['p', 'div', 'h2', 'h3', 'h4', 'blockquote', 'li'], true)) {
+                    $text = trim($node->textContent);
+                    if ($text === '') {
+                        $text = '&nbsp;';
+                    }
+                    
+                    $align = 'left';
+                    $style = $node->getAttribute('style');
+                    if ($style !== '' && preg_match('/text-align\s*:\s*(left|center|right|justify)/i', $style, $m)) {
+                        $align = strtolower($m[1]);
+                    }
+                    
+                    $out[] = ['text' => $text, 'align' => $align];
+                }
+            } elseif ($node instanceof DOMText) {
+                $text = trim($node->nodeValue);
+                if ($text !== '') {
+                    $out[] = ['text' => $text, 'align' => 'left'];
+                }
+            }
+        }
+    }
+    
+    if (!$out) {
+        return [['text' => '', 'align' => 'left']];
+    }
+    return $out;
+}
+
 function odt_paragraphs_from_html(string $html): array
 {
     $html = preg_replace('/<div\s+class=["\']intro-gap["\']\s*>\s*<\/div>/i', '<p>&nbsp;</p>', $html) ?? $html;
@@ -2257,10 +2314,10 @@ function odt_paragraphs_from_html(string $html): array
     $out = [];
     foreach ($lines as $line) {
         $trimmed = trim($line);
-        $out[] = $trimmed;
+        $out[] = ['text' => $trimmed, 'align' => 'left'];
     }
     if (!$out) {
-        return [''];
+        return [['text' => '', 'align' => 'left']];
     }
     return $out;
 }
