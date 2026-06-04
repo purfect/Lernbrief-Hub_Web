@@ -2267,30 +2267,52 @@ function odt_paragraphs_with_styles_from_html(string $html): array
     $out = [];
     
     if ($body) {
-        foreach ($body->childNodes as $node) {
+        // Rekursiv alle Block-Elemente finden
+        $walker = function (DOMNode $node) use (&$walker, &$out, &$dom) {
             if ($node instanceof DOMElement) {
                 $tagName = strtolower($node->tagName);
                 if (in_array($tagName, ['p', 'div', 'h2', 'h3', 'h4', 'blockquote', 'li'], true)) {
-                    $text = trim($node->textContent);
-                    if ($text === '') {
-                        $text = '&nbsp;';
-                    }
-                    
+                    // text-align Style extrahieren
                     $align = 'left';
                     $style = $node->getAttribute('style');
                     if ($style !== '' && preg_match('/text-align\s*:\s*(left|center|right|justify)/i', $style, $m)) {
                         $align = strtolower($m[1]);
                     }
                     
-                    $out[] = ['text' => $text, 'align' => $align];
-                }
-            } elseif ($node instanceof DOMText) {
-                $text = trim($node->nodeValue);
-                if ($text !== '') {
-                    $out[] = ['text' => $text, 'align' => 'left'];
+                    // HTML aus diesem Element als String bekommen (mit <br> erhalten)
+                    $innerHtml = '';
+                    foreach ($node->childNodes as $child) {
+                        $innerHtml .= $dom->saveHTML($child);
+                    }
+                    
+                    // <br> → Newline umwandeln
+                    $innerHtml = preg_replace('/<br\s*\/?\s*>/i', "\n", $innerHtml) ?? $innerHtml;
+                    // Tags entfernen
+                    $text = html_entity_decode(strip_tags($innerHtml), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+                    // Newlines normalisieren
+                    $text = str_replace(["\r\n", "\r"], "\n", $text);
+                    $text = preg_replace('/[ \t]+\n/', "\n", $text) ?? $text;
+                    $text = preg_replace('/\n{3,}/', "\n\n", $text) ?? $text;
+                    
+                    // Nach Newlines splitten und jeden als Paragraph hinzufügen
+                    $lines = explode("\n", $text);
+                    foreach ($lines as $line) {
+                        $trimmed = trim($line);
+                        if ($trimmed === '') {
+                            $trimmed = '&nbsp;';
+                        }
+                        $out[] = ['text' => $trimmed, 'align' => $align];
+                    }
+                } else {
+                    // Nicht-Block-Elemente: Kinder durchsuchen
+                    foreach ($node->childNodes as $child) {
+                        $walker($child);
+                    }
                 }
             }
-        }
+        };
+        
+        $walker($body);
     }
     
     if (!$out) {
